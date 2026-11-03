@@ -32,6 +32,14 @@ def build(ctx):
 
     ctx.load('pebble_sdk')
 
+    # CloudPebble sometimes supplies its own cached platform list instead of
+    # honoring package.json. Clay 1.0.x has no gabbro/flint native library.
+    # Restrict the actual build environment as well as the manifest.
+    supported = ('basalt', 'chalk', 'diorite', 'emery')
+    ctx.env.TARGET_PLATFORMS = [p for p in ctx.env.TARGET_PLATFORMS if p in supported]
+    if not ctx.env.TARGET_PLATFORMS:
+        ctx.fatal('No configured platform is supported by this app and pebble-clay')
+
     build_worker = os.path.exists('worker_src')
     binaries = []
 
