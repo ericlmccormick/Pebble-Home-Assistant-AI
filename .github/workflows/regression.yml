@@ -28,7 +28,7 @@ jobs:
           assert {'COMMAND','TEXT','CHUNK','FONT_SIZE','VOLUME'} <= keys
           for cmd in ('DICTATION','TEXT_RESPONSE_NO_AUDIO','TEXT_RESPONSE_8_16',
                       'AUDIO_CHUNK','AUDIO_SENTENCE_END'):
-              assert cmd in c or cmd == 'DICTATION'
+              assert (cmd in c or (cmd == 'TEXT_RESPONSE_8_16' and 'strncmp(command_tuple->value->cstring, "TEXT_RESPONSE", 13)' in c))
               assert cmd in js
           assert '/api/conversation/process' in js
           assert '/api/tts_get_url' in js
@@ -38,5 +38,9 @@ jobs:
           assert 'generativelanguage.googleapis.com' not in js
           assert 'texttospeech.googleapis.com' not in js
           assert pkg['pebble']['displayName'] == 'Home Assistant AI'
+          assert pkg['pebble']['manifestVersion'] == 2
+          assert 'Microphone' in pkg['pebble']['usesPermissions']
+          for cmd in ('MIC_START','MIC_AUDIO','MIC_END','MIC_CANCEL','CONV_RESUME','CONV_AUDIO_END'):
+              assert cmd in c and cmd in js
           print('Static regression checks passed')
           PY
