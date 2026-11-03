@@ -314,7 +314,7 @@ function haJson(path,payload) {
       }catch(e){if(!settled){settled=true;clearTimeout(timer);reject(e);}}
     }).catch(function(e) {
       var retryable=e && (e.status===429 ||
-        (safe && (e.status===502 || e.status===503 || e.status===504)));
+        (safe && (!e.status || e.status===502 || e.status===503 || e.status===504)));
       if(n<(safe?2:1) && retryable)
         return haDelay((n+1)*750).then(function(){return attempt(n+1);});
       throw e;
