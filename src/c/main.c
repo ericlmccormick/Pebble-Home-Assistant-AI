@@ -447,14 +447,22 @@ static void ha_mic_flush(void) {
   const char *cmd=NULL;
   if(s_mic_cancel_pending)cmd="MIC_CANCEL";
   else if(s_mic_start_pending)cmd="MIC_START";
-  else if(s_mic_count)cmd="MIC_AUDIO";
+  else if(s_mic_count>=2 || (s_mic_count>0 && s_mic_end_pending))
+    cmd="MIC_AUDIO";
   else if(s_mic_end_pending)cmd=s_mic_overflow?"MIC_CANCEL":"MIC_END";
   if(!cmd)return;
   DictionaryIterator *iter=NULL;
   if(app_message_outbox_begin(&iter)!=APP_MSG_OK || !iter)return;
   dict_write_cstring(iter,MESSAGE_KEY_COMMAND,cmd);
-  if(strcmp(cmd,"MIC_AUDIO")==0){
-    dict_write_data(iter,MESSAGE_KEY_CHUNK,s_mic_queue[s_mic_head],HA_FRAME_BYTES);
+  uint8_t frame_count=0;
+  if(strcmp(cmd,"MIC_AUDIO")==0) {
+    uint8_t packet[HA_FRAME_BYTES*2];
+    frame_count=s_mic_count>=2?2:1;
+    for(uint8_t i=0;i<frame_count;i++) {
+      uint16_t pos=(s_mic_head+i)%HA_QUEUE_FRAMES;
+      memcpy(packet+i*HA_FRAME_BYTES,s_mic_queue[pos],HA_FRAME_BYTES);
+    }
+    dict_write_data(iter,MESSAGE_KEY_CHUNK,packet,HA_FRAME_BYTES*frame_count);
     dict_write_int32(iter,MESSAGE_KEY_VOLUME,(int32_t)s_mic_seq);
   }
   AppMessageResult result=app_message_outbox_send();
@@ -462,8 +470,9 @@ static void ha_mic_flush(void) {
   s_mic_tx_busy=true;
   if(s_mic_cancel_pending){s_mic_cancel_pending=false;s_mic_count=0;}
   else if(s_mic_start_pending)s_mic_start_pending=false;
-  else if(s_mic_count) {
-    s_mic_head=(s_mic_head+1)%HA_QUEUE_FRAMES;s_mic_count--;s_mic_seq++;
+  else if(frame_count) {
+    s_mic_head=(s_mic_head+frame_count)%HA_QUEUE_FRAMES;
+    s_mic_count-=frame_count;s_mic_seq+=frame_count;
   } else if(s_mic_end_pending)s_mic_end_pending=false;
 }
 static void ha_mic_tx_sent(DictionaryIterator *iter,void *context) {
