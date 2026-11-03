@@ -4,7 +4,7 @@ const fs=require('fs');
 const vm=require('vm');
 const source=fs.readFileSync('src/pkjs/index.js','utf8');
 const start=source.indexOf('function wavToPcm(bytes) {');
-const end=source.indexOf('function fetchWav(path,gen) {',start);
+const end=source.indexOf('function fetchWav(path,gen,attempt) {',start);
 assert(start>=0 && end>start,'WAV decoder source not found');
 const sandbox={DataView,Uint8Array,String,Error,Array,Math};
 vm.runInNewContext(source.slice(start,end),sandbox);
