@@ -399,6 +399,7 @@ static void ha_mic_finish(void) {
   ha_mic_halt();
   s_mic_end_pending=true;
   s_mic_waiting=true;
+  set_status("Processing...");
   ha_mic_flush();
 }
 static void ha_mic_data(const int16_t *samples,size_t count,void *ctx) {
@@ -442,7 +443,7 @@ static void ha_mic_stopped(MicCaptureStopReason reason,void *context) {
   }
 }
 static void ha_mic_flush(void) {
-  if(s_mic_tx_busy || !s_conversation_mode) return;
+  if(s_mic_tx_busy || (!s_conversation_mode && !s_mic_cancel_pending)) return;
   const char *cmd=NULL;
   if(s_mic_cancel_pending)cmd="MIC_CANCEL";
   else if(s_mic_start_pending)cmd="MIC_START";
@@ -503,7 +504,11 @@ static void select_short_click_handler(ClickRecognizerRef recognizer, void *cont
   }
   #endif
   #if HA_MIC_AVAILABLE
-    if(s_conversation_mode) {ha_mic_halt();s_mic_waiting=true;}
+    if(s_conversation_mode) {
+      ha_mic_halt();s_mic_count=0;s_mic_end_pending=false;
+      s_mic_start_pending=false;s_mic_cancel_pending=true;
+      ha_mic_flush();s_conversation_mode=false;s_mic_waiting=true;
+    }
   #endif
   dictation_session_start(s_dictation_session); 
 }
@@ -514,10 +519,10 @@ static void select_long_click_handler(ClickRecognizerRef recognizer, void *conte
   #endif
   #if HA_MIC_AVAILABLE
     if(s_conversation_mode) {
-      s_conversation_mode=false;
       ha_mic_halt();
       s_mic_count=0;s_mic_end_pending=false;s_mic_start_pending=false;
       s_mic_cancel_pending=true;ha_mic_flush();
+      s_conversation_mode=false;
     } else {
       s_conversation_mode=true;
       ha_mic_restart();
