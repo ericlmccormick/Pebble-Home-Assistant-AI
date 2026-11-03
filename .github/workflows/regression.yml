@@ -1,0 +1,38 @@
+name: Static regression checks
+on:
+  push:
+  pull_request:
+jobs:
+  static-checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: JavaScript syntax
+        run: node --check src/pkjs/index.js
+      - name: Home Assistant API and Pebble message contract
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          pkg = json.loads(Path('package.json').read_text())
+          c = Path('src/c/main.c').read_text()
+          js = Path('src/pkjs/index.js').read_text()
+          keys = set(pkg['pebble']['messageKeys'])
+          assert {'COMMAND','TEXT','CHUNK','FONT_SIZE','VOLUME'} <= keys
+          for cmd in ('DICTATION','TEXT_RESPONSE_NO_AUDIO','TEXT_RESPONSE_8_16',
+                      'AUDIO_CHUNK','AUDIO_SENTENCE_END'):
+              assert cmd in c or cmd == 'DICTATION'
+              assert cmd in js
+          assert '/api/conversation/process' in js
+          assert '/api/tts_get_url' in js
+          assert 'preferred_format' in js and "preferred_sample_rate:8000" in js
+          assert 's_gemini_text' not in c
+          assert 'RESOURCE_ID_IMAGE_GEMINI_LOGO' not in c
+          assert 'generativelanguage.googleapis.com' not in js
+          assert 'texttospeech.googleapis.com' not in js
+          assert pkg['pebble']['displayName'] == 'Home Assistant AI'
+          print('Static regression checks passed')
+          PY
