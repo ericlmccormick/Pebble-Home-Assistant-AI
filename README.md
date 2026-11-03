@@ -19,6 +19,16 @@ Watch dictation is transcribed by Pebble's normal dictation service. Home Assist
 
 If your HA TTS provider cannot transcode to 8-kHz PCM WAV, the app will show text but playback may fail. HA uses FFmpeg for transcoding where supported.
 
+## Dynamic Home Assistant service selectors
+
+When you open the Pebble app's settings, the phone uses the saved Home Assistant HTTPS URL and long-lived token to discover available voice providers:
+
+- **Conversation agent (tap-to-talk)**: lists `conversation.*` entities from `GET /api/states`; select your Google AI agent explicitly so the watch interprets requests like your phone.
+- **Text-to-speech engine**: lists `tts.*` entities from `GET /api/states`. Select `tts.home_assistant_cloud` for the existing Cloud voice setup.
+- **Speech-to-text / Assist pipeline**: lists configured Assist pipelines through the authenticated WebSocket command `assist_pipeline/pipeline/list`. Each option shows its configured STT engine and conversation engine; this selection is used for the **experimental raw-microphone conversation mode**, not normal Pebble dictation.
+
+The setting values remain the real Home Assistant entity/pipeline IDs, not friendly names. Refresh the page to discover newly installed engines. If discovery fails, settings retain the previously saved values and revert to editable input fields. The phone must be able to reach your configured HTTPS Home Assistant URL. Saving a new URL/token requires opening the page again to refresh from that server.
+
 ## Experimental full conversation mode (raw microphone)
 
 The full hands-free streaming pipeline is now implemented **behind the HA_ENABLE_RAW_MIC compile flag**. It is not enabled in the standard CloudPebble build because the SDK from the last user's compile log was 4.33.1 and the microphone capture API requires **PebbleOS SDK revision 111 and matching firmware**. A build passing with this flag OFF only proves that tap-to-talk still compiles.
