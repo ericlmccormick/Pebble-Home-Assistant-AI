@@ -1,0 +1,38 @@
+{
+  "author": "Eric McCormick",
+  "dependencies": {
+    "pebble-clay": "^1.0.4"
+  },
+  "keywords": [],
+  "name": "pebble-home-assistant-ai",
+  "pebble": {
+    "capabilities": [
+      "configurable"
+    ],
+    "displayName": "Home Assistant AI",
+    "enableMultiJS": true,
+    "messageKeys": [
+      "COMMAND",
+      "TEXT",
+      "CHUNK",
+      "FONT_SIZE",
+      "VOLUME"
+    ],
+    "projectType": "native",
+    "resources": {
+      "media": []
+    },
+    "sdkVersion": "3",
+    "targetPlatforms": [
+      "basalt",
+      "chalk",
+      "diorite",
+      "emery"
+    ],
+    "uuid": "9d7ba0b9-5499-4b3b-9cd1-4c673901dc87",
+    "watchapp": {
+      "watchface": false
+    }
+  },
+  "version": "0.1.0"
+}
