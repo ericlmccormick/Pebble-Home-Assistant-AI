@@ -43,7 +43,9 @@ static Window *s_main_window;
 static ScrollLayer *s_scroll_layer;             
 static TextLayer *s_text_layer;                 
 static TextLayer *s_status_layer;               
-static Layer *s_idle_layer;                     
+static Layer *s_idle_layer;
+static GBitmap *s_logo_bitmap;
+static BitmapLayer *s_logo_layer;                     
                   
                
 static TextLayer *s_title_layer;                
@@ -768,6 +770,7 @@ static void main_window_load(Window *window) {
   s_idle_layer = layer_create(bounds);
 
   #if defined(PBL_ROUND) 
+    s_logo_layer = bitmap_layer_create(GRect((bounds.size.w / 2) - 24, 15, 48, 48));
     s_title_layer = text_layer_create(GRect(0, 65, bounds.size.w, 35));
     text_layer_set_text_alignment(s_title_layer, GTextAlignmentCenter); 
 
@@ -777,7 +780,8 @@ static void main_window_load(Window *window) {
     s_arrow_layer = layer_create(GRect(bounds.size.w - 30, 110, 20, 20));
     s_pinwheel_layer = layer_create(GRect(bounds.size.w - 35, 105, 30, 30));
   #else 
-    s_title_layer = text_layer_create(GRect(10, 20, bounds.size.w - 20, 40));
+    s_logo_layer = bitmap_layer_create(GRect(10, 15, 48, 48));
+    s_title_layer = text_layer_create(GRect(65, 20, bounds.size.w - 65, 40));
     text_layer_set_text_alignment(s_title_layer, GTextAlignmentLeft); 
 
     s_prompt_layer = text_layer_create(GRect(0, 80, bounds.size.w - 30, 50));
@@ -789,7 +793,15 @@ static void main_window_load(Window *window) {
 
  
 
-  text_layer_set_font(s_title_layer, fonts_get_system_font(FONT_KEY_GOTHIC_28_BOLD));
+  // Same idle-screen bitmap layout as Pebble Gemini, now using Home Assistant.
+  s_logo_bitmap = gbitmap_create_with_resource(RESOURCE_ID_IMAGE_HOME_ASSISTANT_LOGO);
+  if (s_logo_bitmap) {
+    bitmap_layer_set_bitmap(s_logo_layer, s_logo_bitmap);
+    bitmap_layer_set_compositing_mode(s_logo_layer, GCompOpSet);
+  }
+  layer_add_child(s_idle_layer, bitmap_layer_get_layer(s_logo_layer));
+
+  text_layer_set_font(s_title_layer, fonts_get_system_font(FONT_KEY_GOTHIC_24_BOLD));
   text_layer_set_text(s_title_layer, "Home AI");
   layer_add_child(s_idle_layer, text_layer_get_layer(s_title_layer));
 
@@ -830,7 +842,9 @@ static void main_window_unload(Window *window) {
     text_layer_destroy(s_volume_text_layer);    
   #endif
   
-  dictation_session_destroy(s_dictation_session); 
+  dictation_session_destroy(s_dictation_session);
+  if (s_logo_bitmap) gbitmap_destroy(s_logo_bitmap);
+  bitmap_layer_destroy(s_logo_layer); 
  
            
   text_layer_destroy(s_title_layer);            

@@ -20,7 +20,47 @@
     ],
     "projectType": "native",
     "resources": {
-      "media": []
+      "media": [
+        {
+          "file": "images/home_assistant_logo_emery.png",
+          "name": "IMAGE_HOME_ASSISTANT_LOGO",
+          "targetPlatforms": [
+            "emery"
+          ],
+          "type": "bitmap"
+        },
+        {
+          "file": "images/home_assistant_logo_chalk.png",
+          "name": "IMAGE_HOME_ASSISTANT_LOGO",
+          "targetPlatforms": [
+            "chalk"
+          ],
+          "type": "bitmap"
+        },
+        {
+          "file": "images/home_assistant_logo_basalt.png",
+          "name": "IMAGE_HOME_ASSISTANT_LOGO",
+          "targetPlatforms": [
+            "basalt"
+          ],
+          "type": "bitmap"
+        },
+        {
+          "file": "images/home_assistant_logo_diorite.png",
+          "name": "IMAGE_HOME_ASSISTANT_LOGO",
+          "targetPlatforms": [
+            "diorite"
+          ],
+          "type": "bitmap"
+        },
+        {
+          "file": "images/icon25.png",
+          "menuIcon": true,
+          "name": "logo25",
+          "targetPlatforms": null,
+          "type": "bitmap"
+        }
+      ]
     },
     "sdkVersion": "3",
     "targetPlatforms": [
