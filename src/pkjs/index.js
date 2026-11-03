@@ -113,8 +113,202 @@ function haJson(path,payload) {
     return r.json();
   });
 }
+// ------------------------------------------------------------------------
+// Optional hands-free path (requires PebbleOS SDK >=111 + Microphone permission)
+// PCM samples arrive as independent 20ms IMA-ADPCM watch frames.
+// The phone restores PCM16 and streams it into the selected HA Assist pipeline.
+// ------------------------------------------------------------------------
+var conversationSocket=null, conversationGeneration=0, conversationId=1001;
+var conversationHandler=-1, conversationAudioQueue=[], conversationEnd=false;
+var conversationAccepted=false, conversationReceivedText=false, conversationLastSequence=-1;
+var conversationAudioFinalPending=false, conversationTimeout=null, conversationStage='';
+var conversationPipeline=localStorage.getItem('HA_PIPELINE')||'';
+
+function conversationStopSocket() {
+  if(conversationTimeout){clearTimeout(conversationTimeout);conversationTimeout=null;}
+  if(conversationSocket) {
+    try {conversationSocket.onclose=null;conversationSocket.close();}catch(e){}
+  }
+  conversationSocket=null;
+  conversationHandler=-1;conversationAccepted=false;
+  conversationAudioQueue=[];conversationEnd=false;
+}
+function conversationFailure(message, generation) {
+  if(generation!==conversationGeneration)return;
+  console.log('Home Assistant conversation: '+message);
+  conversationStopSocket();
+  sentenceQueue=[];readyAudioQueue=[];conversationAudioFinalPending=false;
+  Pebble.sendAppMessage({COMMAND:'TEXT_RESPONSE_NO_AUDIO',TEXT:String(message).substring(0,180)},
+    function(){Pebble.sendAppMessage({COMMAND:'CONV_RESUME'});});
+}
+function decodeMicFrame(data) {
+  var bytes=data instanceof Uint8Array?data:new Uint8Array(data);
+  if(bytes.length!==160)throw Error('Mic frame length mismatch');
+  // Watch resets its IMA predictor per 320-sample frame.
+  var steps=stepTable,indices=indexTable,pred=0,idx=0;
+  var out=new Uint8Array(640),cursor=0;
+  for(var i=0;i<160;i++) {
+    for(var j=0;j<2;j++) {
+      var d=j?(bytes[i]&15):(bytes[i]>>4),step=steps[idx];
+      var delta=step>>3;
+      if(d&4)delta+=step;
+      if(d&2)delta+=step>>1;
+      if(d&1)delta+=step>>2;
+      pred+=(d&8)?-delta:delta;
+      if(pred>32767)pred=32767;
+      if(pred< -32768)pred=-32768;
+      idx+=indices[d];if(idx<0)idx=0;if(idx>88)idx=88;
+      out[cursor++]=pred&255;out[cursor++]=(pred>>8)&255;
+    }
+  }
+  return out;
+}
+function conversationFlushAudio() {
+  if(!conversationSocket || !conversationAccepted || conversationHandler<0)return;
+  while(conversationAudioQueue.length) {
+    if(conversationSocket.readyState!==1)return;
+    // Backpressure: do not feed unlimited data into a busy WebSocket.
+    if(conversationSocket.bufferedAmount>150000)return;
+    var frame=conversationAudioQueue.shift();
+    var packet=new Uint8Array(frame.length+1);
+    packet[0]=conversationHandler;packet.set(frame,1);
+    conversationSocket.send(packet.buffer);
+  }
+  if(conversationEnd && !conversationAudioQueue.length && conversationSocket.readyState===1) {
+    conversationSocket.send((new Uint8Array([conversationHandler])).buffer);
+    conversationEnd=false;
+    conversationHandler=-1;
+  }
+}
+function conversationStart() {
+  if(!haToken || !haUrl) {
+    Pebble.sendAppMessage({COMMAND:'TEXT_RESPONSE_NO_AUDIO',TEXT:'Configure Home Assistant URL and token.'});
+    return;
+  }
+  conversationStopSocket();
+  conversationReceivedText=false;conversationLastSequence=-1;
+  var gen=++conversationGeneration; ++requestGeneration;
+  sentenceQueue=[];readyAudioQueue=[];
+  isFetchingTTS=false;isSendingBLE=false;
+  var url;
+  try{url=normalizeUrl().replace(/^https:/i,'wss:')+'/api/websocket';}
+  catch(e){conversationFailure(e.message,gen);return;}
+  var ws=new WebSocket(url);
+  conversationSocket=ws;
+  conversationStage='auth';
+  conversationTimeout=setTimeout(function(){
+    if(gen===conversationGeneration && !conversationReceivedText)
+      conversationFailure('HA voice request timed out',gen);
+  },35000);
+  ws.onopen=function(){};
+  ws.onclose=function() {
+    if(gen===conversationGeneration && !conversationReceivedText)
+      conversationFailure('HA voice socket closed',gen);
+  };
+  ws.onerror=function(){conversationFailure('HA voice socket error',gen);};
+  ws.onmessage=function(event) {
+    if(gen!==conversationGeneration)return;
+    var msg;
+    try{msg=JSON.parse(event.data);}catch(e){return;}
+    if(msg.type==='auth_required'){
+      ws.send(JSON.stringify({type:'auth',access_token:haToken}));
+    } else if(msg.type==='auth_invalid') {
+      conversationFailure('Home Assistant rejected token',gen);
+    } else if(msg.type==='auth_ok') {
+      var cmd={id:conversationId++,type:'assist_pipeline/run',
+        start_stage:'stt',end_stage:'intent',input:{sample_rate:16000}};
+      if(haConversationId)cmd.conversation_id=haConversationId;
+      if(conversationPipeline)cmd.pipeline=conversationPipeline;
+      conversationStage='starting';
+      ws._haRunId=cmd.id;
+      ws.send(JSON.stringify(cmd));
+    } else if(msg.type==='result' && msg.id===ws._haRunId && !msg.success) {
+      conversationFailure('HA Assist error: '+JSON.stringify(msg.error||{}).substring(0,90),gen);
+    } else if(msg.type==='event' && msg.id===ws._haRunId) {
+      var ev=msg.event||{},data=ev.data||{};
+      if(ev.type==='run-start') {
+        conversationHandler=data.runner_data && data.runner_data.stt_binary_handler_id;
+        conversationAccepted=true;conversationStage='stt';
+        conversationFlushAudio();
+      } else if(ev.type==='stt-end') {
+        conversationStage='intent';
+      } else if(ev.type==='intent-end') {
+        conversationReceivedText=true;
+        if(conversationTimeout){clearTimeout(conversationTimeout);conversationTimeout=null;}
+        var response=data.intent_output && data.intent_output.response;
+        var speech=response && response.speech && response.speech.plain;
+        var reply=speech && speech.speech;
+        if(data.conversation_id) {
+          haConversationId=data.conversation_id;
+          localStorage.setItem('HA_CONVERSATION_ID',haConversationId);
+        }
+        if(response && response.conversation_id) {
+          haConversationId=response.conversation_id;
+          localStorage.setItem('HA_CONVERSATION_ID',haConversationId);
+        }
+        conversationStopSocket();
+        conversationShowReply(String(reply||'No response from Home Assistant.'),gen);
+      } else if(ev.type==='error') {
+        conversationFailure('HA Assist: '+(data.message||data.code||'unknown error'),gen);
+      } else if(ev.type==='run-end' && !conversationReceivedText) {
+        conversationFailure('No speech recognized by Home Assistant',gen);
+      }
+    }
+  };
+}
+function conversationAudioFrame(data,seq) {
+  if(!conversationSocket || conversationReceivedText)return;
+  if(seq!==conversationLastSequence+1) {
+    if(conversationLastSequence===-1 && seq===0) {
+      // Valid first packet.
+    } else {
+      conversationFailure('Mic audio packet loss',conversationGeneration);return;
+    }
+  }
+  conversationLastSequence=seq;
+  try {
+    conversationAudioQueue.push(decodeMicFrame(data));
+    if(conversationAudioQueue.length>120)
+      throw Error('Mic audio queue overflow');
+    conversationFlushAudio();
+  }catch(e){conversationFailure(e.message,conversationGeneration);}
+}
+function conversationShowReply(reply,gen) {
+  var canSpeak=hasSpeaker && enableTts && haTts;
+  var cmd=canSpeak?'TEXT_RESPONSE_8_16':'TEXT_RESPONSE_NO_AUDIO';
+  lastAnswer=reply;
+  Pebble.sendAppMessage({COMMAND:cmd,TEXT:reply.substring(0,1900)},
+    function() {
+      if(gen!==conversationGeneration)return;
+      if(canSpeak) {
+        conversationAudioFinalPending=true;
+        sentenceQueue=(reply.match(/[^.!?]+[.!?]*/g)||[reply])
+          .map(function(s){return s.trim();})
+          .filter(function(s){return !!s;});
+        startTTSFetchLoop(requestGeneration);
+      }else Pebble.sendAppMessage({COMMAND:'CONV_RESUME'});
+    },function(){console.log('Unable to send Assist answer to watch');}
+  );
+}
+function conversationMaybeCompleteAudio() {
+  if(!conversationAudioFinalPending || isFetchingTTS || isSendingBLE ||
+    sentenceQueue.length || readyAudioQueue.length)return;
+  conversationAudioFinalPending=false;
+  Pebble.sendAppMessage({COMMAND:'CONV_AUDIO_END'});
+}
+
 Pebble.addEventListener('appmessage',function(e) {
   var d=e.payload;
+  if(d.COMMAND==='MIC_START'){conversationStart();return;}
+  if(d.COMMAND==='MIC_AUDIO'){
+    conversationAudioFrame(d.CHUNK, Number(d.VOLUME));return;
+  }
+  if(d.COMMAND==='MIC_END'){
+    conversationEnd=true;conversationFlushAudio();return;
+  }
+  if(d.COMMAND==='MIC_CANCEL'){
+    ++conversationGeneration;conversationStopSocket();return;
+  }
   if (d.COMMAND !== 'DICTATION') return;
   if (!haUrl || !haToken) { errText('Set Home Assistant URL and token in settings.'); return; }
   if (!d.TEXT) {errText('No dictation captured.'); return;}
@@ -279,7 +473,9 @@ function fetchWav(path,gen) {
   });
 }
 function startTTSFetchLoop(gen) {
-  if(gen!==requestGeneration || isFetchingTTS || !sentenceQueue.length) return;
+  if(gen!==requestGeneration || isFetchingTTS || !sentenceQueue.length) {
+    conversationMaybeCompleteAudio();return;
+  }
   isFetchingTTS=true;
   var sentence=sentenceQueue.shift();
   haJson('/api/tts_get_url',{
@@ -297,19 +493,22 @@ function startTTSFetchLoop(gen) {
     isFetchingTTS=false;
     if(!isSendingBLE) startBLESendLoop();
     startTTSFetchLoop(gen);
+    conversationMaybeCompleteAudio();
   }).catch(function(err) {
     if(gen!==requestGeneration) return;
     isFetchingTTS=false;
+    conversationAudioFinalPending=false;
     // Keep the text response even when TTS generation fails.
     console.log('Home Assistant TTS error: '+String(err.message||err));
     sentenceQueue=[];
     // Preserve the AI text answer and clear the watch's buffering indicator.
-    Pebble.sendAppMessage({COMMAND:'TEXT_RESPONSE_NO_AUDIO',TEXT:lastAnswer.substring(0,1900)});
+    Pebble.sendAppMessage({COMMAND:'TEXT_RESPONSE_NO_AUDIO',TEXT:lastAnswer.substring(0,1900)},
+      function(){Pebble.sendAppMessage({COMMAND:'CONV_RESUME'});});
   });
 }
 function startBLESendLoop() {
   if (isSendingBLE) return; 
-  if (readyAudioQueue.length === 0) return; 
+  if (readyAudioQueue.length === 0) {conversationMaybeCompleteAudio();return;} 
   
   isSendingBLE = true; 
   var adpcmBytes = readyAudioQueue.shift(); 
@@ -335,11 +534,11 @@ function startBLESendLoop() {
         { 'COMMAND': 'AUDIO_SENTENCE_END' },
         function() { 
             isSendingBLE = false; 
-            setTimeout(startBLESendLoop, 120); 
+            setTimeout(function(){startBLESendLoop();conversationMaybeCompleteAudio();}, 120); 
         },
         function() { 
             isSendingBLE = false;
-            setTimeout(startBLESendLoop, 300); 
+            setTimeout(function(){startBLESendLoop();conversationMaybeCompleteAudio();}, 300); 
         }
       );
     }
