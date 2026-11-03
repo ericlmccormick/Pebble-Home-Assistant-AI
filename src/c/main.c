@@ -415,9 +415,8 @@ static void inbox_received_callback(DictionaryIterator *iterator, void *context)
   if (!command_tuple) return;                   
 
   if (strncmp(command_tuple->value->cstring, "TEXT_RESPONSE", 13) == 0) { 
-    bool no_audio = false;
-
     #ifdef PBL_SPEAKER
+    bool no_audio = false;
       // MULTIPLEXING INTERCEPT: Determine if the phone told us to expect audio chunks
       if (strcmp(command_tuple->value->cstring, "TEXT_RESPONSE_NO_AUDIO") == 0) {
         no_audio = true;
