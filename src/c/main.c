@@ -578,7 +578,7 @@ static void set_ui_state(UIState state) {
                              "Conversation mode\nMicrophone unavailable") :
           "Press Select\nto record");
       #else
-      text_layer_set_text(s_prompt_layer, "Tap Select: talk\nHold: conversation");
+      text_layer_set_text(s_prompt_layer, "Press Select\nto record");
       #endif 
       break;
     case UI_STATE_THINKING:                     
@@ -760,10 +760,10 @@ static void main_window_load(Window *window) {
     s_pinwheel_layer = layer_create(GRect(bounds.size.w - 35, 105, 30, 30));
   #else 
     s_logo_layer = bitmap_layer_create(GRect(10, 15, 48, 48));
-    s_title_layer = text_layer_create(GRect(65, 13, bounds.size.w - 67, 60));
+    s_title_layer = text_layer_create(GRect(65, 19, bounds.size.w - 67, 52));
     text_layer_set_text_alignment(s_title_layer, GTextAlignmentLeft); 
 
-    s_prompt_layer = text_layer_create(GRect(5, 94, bounds.size.w - 64, 60));
+    s_prompt_layer = text_layer_create(GRect(5, 94, bounds.size.w - 64, 44));
     text_layer_set_text_alignment(s_prompt_layer, GTextAlignmentRight); 
 
     s_arrow_layer = layer_create(GRect(bounds.size.w - 25, 95, 25, 20));
@@ -794,9 +794,9 @@ static void main_window_load(Window *window) {
   // these buttons for scrolling (long-press Up/Down still changes volume).
   #if !defined(PBL_ROUND)
     s_volume_up_hint_layer = text_layer_create(
-      GRect(bounds.size.w - 59, bounds.size.h / 3 - 16, 56, 24));
+      GRect(bounds.size.w - 59, 23, 56, 24));
     s_volume_down_hint_layer = text_layer_create(
-      GRect(bounds.size.w - 59, (bounds.size.h * 2) / 3 - 16, 56, 24));
+      GRect(bounds.size.w - 59, bounds.size.h - 53, 56, 24));
     TextLayer *volume_hints[] = {s_volume_up_hint_layer, s_volume_down_hint_layer};
     const char *volume_labels[] = {"Vol +", "Vol -"};
     for (int i = 0; i < 2; ++i) {
