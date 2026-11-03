@@ -59,7 +59,7 @@ Use a **valid HTTPS endpoint** accessible from the phone, including away from ho
 
 ## Compatibility and limitations
 
-The original project's C dictation, scrolling, ADPCM speaker code and BLE chunk transport are retained. Voice playback is selected for Emery (Pebble Time 2) and Flint (Pebble 2 Duo) when available; other platforms receive text. The configured targets are basalt, chalk, diorite, emery, flint and gabbro. The previously supplied CloudPebble build log confirmed the four original targets but the new targets and experimental raw microphone path still need on-device validation.
+The original project's C dictation, scrolling, ADPCM speaker code and BLE chunk transport are retained. Voice playback is selected for Emery (Pebble Time 2) and Flint (Pebble 2 Duo) when available; other platforms receive text. The default build targets basalt, chalk, diorite, and emery, which are supported by the installed pebble-clay dependency. Flint and gabbro are temporarily excluded because pebble-clay 1.0.4 lacks their platform libraries. Supporting these platforms will require updating or replacing Clay, rather than simply adding them back to targetPlatforms. Experimental raw microphone capture remains unverified on hardware.
 
 No in-app automatic TTS entity discovery yet. The default build continues to use Pebble STT. The optional SDK 111 raw microphone build uses Home Assistant Assist WebSocket STT and the preferred (or explicitly configured) Assist pipeline.
 
