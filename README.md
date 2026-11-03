@@ -12,10 +12,13 @@ In Home Assistant, configure your preferred conversation agent and TTS entity, s
 - **Long-lived access token**: stored locally in the companion phone; never commit it.
 - **Conversation agent** (optional): for example `conversation.home_assistant`; leave blank to use HA's default conversation agent.
 - **TTS entity**: for example `tts.piper`. Select the same TTS provider/voice you configured in Home Assistant. The REST TTS endpoint does not automatically select the Assist pipeline's TTS entity.
-- Toggle **Speak responses on watch**. Text replies are always displayed. Text-only watches omit playback.
+- Toggle **Speak responses on watch** to enable speech where the watch has a speaker.
+- Toggle **Text-only responses** to suppress audio regardless of TTS availability; responses still appear on the watch.
+- **Send speech without confirmation** defaults ON. Disable it if you want to review or retry a successfully transcribed phrase before sending.
+- **Vibration feedback** offers Off / Low (short pulse) / Medium (double pulse) / High (long pulse). Selecting a different level and **saving** the settings triggers a sample pulse on the watch; Clay cannot deliver live watch feedback during each dropdown change.
 - **Start new conversation** resets the stored conversation ID.
 
-Watch dictation is transcribed by Pebble's normal dictation service. Home Assistant handles intent/conversation via `POST /api/conversation/process`. The response text is passed back to Home Assistant `POST /api/tts_get_url`, requesting `wav`, mono, 8000 Hz, signed 16-bit PCM. The resulting `/api/tts_proxy/...` audio is downloaded, parsed as RIFF/WAV and compressed to IMA-ADPCM for transport to the watch.
+Watch dictation is transcribed by Pebble's normal dictation service. On successful transcription, the watch displays **You said:** and the recognized phrase on the **Thinking** screen while the request is processed, even when confirmation is disabled. Native dictation error dialogs and recognition retries remain enabled. Home Assistant handles intent/conversation via `POST /api/conversation/process`. The response text is passed back to Home Assistant `POST /api/tts_get_url`, requesting `wav`, mono, 8000 Hz, signed 16-bit PCM. The resulting `/api/tts_proxy/...` audio is downloaded, parsed as RIFF/WAV and compressed to IMA-ADPCM for transport to the watch.
 
 If your HA TTS provider cannot transcode to 8-kHz PCM WAV, the app will show text but playback may fail. HA uses FFmpeg for transcoding where supported.
 
@@ -36,13 +39,13 @@ The full hands-free streaming pipeline is now implemented **behind the HA_ENABLE
 When active, it works as follows:
 
 1. **Tap Select** = the normal Pebble dictation-to-Home-Assistant path.
-2. **Long press Select (500ms)** = enable/disable hands-free conversation.
+2. **The published `main` build does not subscribe to Select long press.** This experimental flow is currently **unavailable** in the published app. Re-enabling it requires an SDK and firmware with raw microphone API support and a separate experimental build.
 3. The watch opens local raw microphone capture at 16,000 Hz, computes simple energy-based voice activity detection, keeps 200ms of preroll and waits for three 20ms speech frames.
 4. After speech begins, it compresses each frame to IMA ADPCM; two frames are sent per AppMessage (~320 bytes every 40ms) with sequence numbers and ACK-based pacing.
 5. After 1.3s of silence (or 22s max), it sends end-of-audio, and **stops recording** while Home Assistant processes the audio.
 6. The phone decodes PCM, authenticates to Home Assistant's `/api/websocket`, runs the preferred Assist pipeline from `stt` to `intent`, and retains the conversation ID across turns.
 7. It returns the text response to the watch, uses the existing Home Assistant TTS endpoint to synthesize spoken audio, and returns to listening **only after watch speaker playback ends**.
-8. Long press again, app exit, or microphone permission revocation ends recording; if capability/permission is absent it reports unavailable instead of claiming to record.
+8. Stopping the experimental session, exiting the app, or microphone permission revocation ends recording; if capability/permission is absent it reports unavailable instead of claiming to record.
 
 Speech audio is transmitted **only when local voice activity is detected**, rather than recording/transmitting silence constantly. It has no wake word, so any nearby conversation that triggers the VAD may be sent for transcription while the mode is active. Enable this mode only when you intend to be heard. This first-cut energy VAD can false-trigger in noise or miss unusually quiet speech.
 
@@ -59,9 +62,19 @@ Speech audio is transmitted **only when local voice activity is detected**, rath
 
 ### Debugging
 
-Watch status `Listening...` indicates capture started; `Processing...` indicates a detected utterance has ended. A `Raw mic needs SDK 111` status means the build does not support raw capture. `Mic unavailable` indicates the SDK API refused to start (permission, busy, or unsupported firmware). On the phone, inspect `Home Assistant conversation:` errors for authentication, STT pipeline, timeout, audio packet loss, or socket failures.
+This section refers **only to the experimental SDK 111 build** (not the normal main-branch app). Watch status `Listening...` indicates capture started; `Processing...` indicates a detected utterance has ended. A `Raw mic needs SDK 111` status means the build does not support raw capture. `Mic unavailable` indicates the SDK API refused to start (permission, busy, or unsupported firmware). On the phone, inspect `Home Assistant conversation:` errors for authentication, STT pipeline, timeout, audio packet loss, or socket failures.
 
 CI validates JS syntax, RIFF/WAV streaming audio parsing, a simulated Assist WebSocket session, and message-command contracts. It does **not** emulate hardware microphone recording, Bluetooth throughput, or the SDK revision 111 native compiler.
+
+## Reliability and retry behavior
+
+- The companion allows up to **20 seconds** for a Home Assistant conversation response. Timeouts produce an on-watch error rather than leaving the app on `Thinking...`.
+- HTTP 401/403 identifies authorization failures; 404 identifies an unavailable API/entity; 429 identifies throttling; 5xx identifies a server-side failure.
+- A device-control conversation is retried automatically only when Home Assistant explicitly rejects it with **429**. A timed-out or interrupted command is **not replayed automatically**, because the device may already have acted on it.
+- TTS URL generation and WAV retrieval have bounded retries for transient network/server failures; individual audio downloads have a **30-second timeout**.
+- Bluetooth audio delivery has a retry limit and falls back to showing the response as text if repeated audio transfers fail.
+- Failed dictation start, unavailable microphone, speech recognition failures, and watch-to-phone message queue failures show an on-watch error.
+- Text-only mode bypasses audio generation and playback.
 
 ## Security
 
@@ -71,7 +84,7 @@ Use a **valid HTTPS endpoint** accessible from the phone, including away from ho
 
 The original project's C dictation, scrolling, ADPCM speaker code and BLE chunk transport are retained. Voice playback is selected for Emery (Pebble Time 2) and Flint (Pebble 2 Duo) when available; other platforms receive text. The default build targets basalt, chalk, diorite, and emery, which are supported by the installed pebble-clay dependency. Flint and gabbro are temporarily excluded because pebble-clay 1.0.4 lacks their platform libraries. Supporting these platforms will require updating or replacing Clay, rather than simply adding them back to targetPlatforms. Experimental raw microphone capture remains unverified on hardware.
 
-No in-app automatic TTS entity discovery yet. The default build continues to use Pebble STT. The optional SDK 111 raw microphone build uses Home Assistant Assist WebSocket STT and the preferred (or explicitly configured) Assist pipeline.
+Conversation and TTS entity dropdowns are dynamically discovered from Home Assistant when the settings page opens. The default build continues to use Pebble STT. The optional SDK 111 raw microphone build uses Home Assistant Assist WebSocket STT and the preferred (or explicitly configured) Assist pipeline.
 
 ## Manual tests
 
@@ -81,6 +94,9 @@ No in-app automatic TTS entity discovery yet. The default build continues to use
 4. Test HA command execution with a harmless light.
 5. Verify TTS PCM WAV output and speaker playback with a short reply and multiple sentences.
 6. Verify wrong token, disconnected network, and missing TTS entity fail safely.
-7. Build/re-run regression tests for each platform before publication.
+7. Verify both STT modes: auto-send without confirmation (recognized words visible on Thinking) and manual confirmation.
+8. Verify text-only mode, all four vibration levels, and the **sample pulse on saving a changed level**.
+9. Test a disconnected Home Assistant server and let the 20-second command timeout expire; check that an informative error appears and that no command is accidentally executed twice.
+10. Run regression checks and perform at least one actual CloudPebble build and device test before publication.
 
 References: https://developers.home-assistant.io/docs/intent_conversation_api/ and https://www.home-assistant.io/integrations/tts/
