@@ -44,6 +44,11 @@ jobs:
           assert 'window_long_click_subscribe(BUTTON_ID_SELECT' not in c
           assert '"Home\\nAssistant AI"' in c
           assert '"Vol +"' in c and '"Vol -"' in c
+          assert 'Hold: conversation' not in c
+          assert 'Tap Select: talk' not in c
+          assert 'GRect(65, 19, bounds.size.w - 67, 52)' in c
+          assert 'GRect(bounds.size.w - 59, 23, 56, 24)' in c
+          assert 'GRect(bounds.size.w - 59, bounds.size.h - 53, 56, 24)' in c
           assert 'RESOURCE_ID_IMAGE_HOME_ASSISTANT_LOGO' in c
           assert pkg['pebble']['manifestVersion'] == 2
           assert 'Microphone' in pkg['pebble']['usesPermissions']
