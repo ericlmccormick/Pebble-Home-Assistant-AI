@@ -18,6 +18,8 @@ jobs:
         run: node tests/test_conversation.js
       - name: Home Assistant dropdown discovery tests
         run: node tests/test_settings_discovery.js
+      - name: Release settings and retry regression tests
+        run: node tests/test_release_features.js
       - name: Home Assistant API and Pebble message contract
         run: |
           python3 - <<'PY'
@@ -50,6 +52,17 @@ jobs:
           assert 'GRect(bounds.size.w - 59, 23, 56, 24)' in c
           assert 'GRect(bounds.size.w - 59, bounds.size.h - 53, 56, 24)' in c
           assert 'RESOURCE_ID_IMAGE_HOME_ASSISTANT_LOGO' in c
+          assert {'AUTO_SEND','HAPTIC_LEVEL'} <= keys
+          for cmd in ('SETTINGS','HAPTIC_PREVIEW'):
+              assert cmd in c and cmd in js
+          assert 'dictation_session_enable_confirmation' in c
+          assert 'dictation_session_enable_error_dialogs' in c
+          assert 'You said:' in c
+          assert "messageKey:'TEXT_ONLY'" in js
+          assert "messageKey:'AUTO_SEND'" in js
+          assert "messageKey:'HAPTIC_LEVEL'" in js
+          assert 'Home Assistant timed out' in js
+          assert 'failureCount>=5' in js
           assert pkg['pebble']['manifestVersion'] == 2
           assert 'Microphone' in pkg['pebble']['usesPermissions']
           for cmd in ('MIC_START','MIC_AUDIO','MIC_END','MIC_CANCEL','CONV_RESUME','CONV_AUDIO_END'):
