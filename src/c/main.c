@@ -427,8 +427,8 @@ static void inbox_received_callback(DictionaryIterator *iterator, void *context)
 
     Tuple *text_tuple = dict_find(iterator, MESSAGE_KEY_TEXT); 
     if (text_tuple) {
-      snprintf(s_gemini_text, sizeof(s_gemini_text), "%s", text_tuple->value->cstring); 
-      text_layer_set_text(s_text_layer, s_gemini_text); 
+      snprintf(s_ha_text, sizeof(s_ha_text), "%s", text_tuple->value->cstring); 
+      text_layer_set_text(s_text_layer, s_ha_text); 
       update_text_layout();                     
       
       set_ui_state(UI_STATE_RESULTS);          
@@ -581,7 +581,7 @@ static void main_window_load(Window *window) {
     layer_add_child(window_layer, text_layer_get_layer(s_volume_text_layer));
   #endif
 
-  s_dictation_session = dictation_session_create(sizeof(s_gemini_text), dictation_session_callback, NULL);
+  s_dictation_session = dictation_session_create(sizeof(s_ha_text), dictation_session_callback, NULL);
 
   set_ui_state(UI_STATE_IDLE); 
 }
