@@ -40,6 +40,11 @@ jobs:
           assert 'generativelanguage.googleapis.com' not in js
           assert 'texttospeech.googleapis.com' not in js
           assert pkg['pebble']['displayName'] == 'Home Assistant AI'
+          assert 'select_long_click_handler' not in c
+          assert 'window_long_click_subscribe(BUTTON_ID_SELECT' not in c
+          assert '"Home\\nAssistant AI"' in c
+          assert '"Vol +"' in c and '"Vol -"' in c
+          assert 'RESOURCE_ID_IMAGE_HOME_ASSISTANT_LOGO' in c
           assert pkg['pebble']['manifestVersion'] == 2
           assert 'Microphone' in pkg['pebble']['usesPermissions']
           for cmd in ('MIC_START','MIC_AUDIO','MIC_END','MIC_CANCEL','CONV_RESUME','CONV_AUDIO_END'):
