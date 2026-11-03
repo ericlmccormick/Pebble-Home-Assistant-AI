@@ -4,6 +4,7 @@ var haUrl = localStorage.getItem('HA_URL') || '';
 var haToken = localStorage.getItem('HA_TOKEN') || '';
 var haAgent = localStorage.getItem('HA_AGENT') || '';
 var haTts = localStorage.getItem('HA_TTS') || '';
+var haPipeline = localStorage.getItem('HA_PIPELINE') || '';
 var haConversationId = localStorage.getItem('HA_CONVERSATION_ID') || '';
 var enableTts = localStorage.getItem('ENABLE_TTS') !== 'false';
 var fontSize = parseInt(localStorage.getItem('FONT_SIZE') || '24', 10);
@@ -11,7 +12,7 @@ var watchInfo = null, hasSpeaker = false;
 try {
   watchInfo = Pebble.getActiveWatchInfo();
   // Gabbro is Pebble 2 Duo (no speaker). Emery is Pebble Time 2.
-  hasSpeaker = !!(watchInfo && watchInfo.platform === 'emery');
+  hasSpeaker = !!(watchInfo && (watchInfo.platform === 'emery' || watchInfo.platform === 'flint'));
 } catch (err) { hasSpeaker = false; }
 var audioProfile = '8k-16b';
 var lastAnswer = '';
@@ -39,6 +40,8 @@ var clayConfig = [
     {type:'input',messageKey:'HA_TOKEN',label:'Long-lived access token',
       description:haToken?'Token saved; leave blank to keep it':'Required; created in Home Assistant user profile',
       attributes:{type:'password',placeholder:haToken?'Saved; leave empty':'Paste token'}},
+    {type:'input',messageKey:'HA_PIPELINE',label:'Assist pipeline ID (conversation mode)',defaultValue:haPipeline,
+      description:'Optional; blank uses preferred Assist pipeline. This sets Cloud STT and Google AI together.'},
     {type:'input',messageKey:'HA_AGENT',label:'Conversation agent ID (optional)',defaultValue:haAgent,
       description:'Leave blank to use Home Assistant default. Example: conversation.home_assistant'}
   ]},
@@ -78,6 +81,8 @@ Pebble.addEventListener('webviewclosed',function(e) {
   var agentBefore = haAgent;
   haAgent = saved('HA_AGENT','HA_AGENT').trim();
   haTts = saved('HA_TTS','HA_TTS').trim();
+  haPipeline = saved('HA_PIPELINE','HA_PIPELINE').trim();
+  conversationPipeline=haPipeline;
   if (agentBefore !== haAgent || (s.RESET_CHAT && s.RESET_CHAT.value)) {
     haConversationId = '';
     localStorage.removeItem('HA_CONVERSATION_ID');
@@ -122,12 +127,13 @@ var conversationSocket=null, conversationGeneration=0, conversationId=1001;
 var conversationHandler=-1, conversationAudioQueue=[], conversationEnd=false;
 var conversationAccepted=false, conversationReceivedText=false, conversationLastSequence=-1;
 var conversationAudioFinalPending=false, conversationTimeout=null, conversationStage='';
-var conversationPipeline=localStorage.getItem('HA_PIPELINE')||'';
+var conversationPipeline=haPipeline;
 
 function conversationStopSocket() {
   if(conversationTimeout){clearTimeout(conversationTimeout);conversationTimeout=null;}
   if(conversationSocket) {
-    try {conversationSocket.onclose=null;conversationSocket.close();}catch(e){}
+    try {conversationSocket.onclose=null;conversationSocket.onerror=null;
+      conversationSocket.onmessage=null;conversationSocket.close();}catch(e){}
   }
   conversationSocket=null;
   conversationHandler=-1;conversationAccepted=false;
