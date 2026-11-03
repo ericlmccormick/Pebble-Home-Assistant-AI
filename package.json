@@ -16,7 +16,9 @@
       "TEXT",
       "CHUNK",
       "FONT_SIZE",
-      "VOLUME"
+      "VOLUME",
+      "AUTO_SEND",
+      "HAPTIC_LEVEL"
     ],
     "projectType": "native",
     "resources": {
