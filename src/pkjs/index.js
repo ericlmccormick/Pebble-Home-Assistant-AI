@@ -127,10 +127,12 @@ var conversationSocket=null, conversationGeneration=0, conversationId=1001;
 var conversationHandler=-1, conversationAudioQueue=[], conversationEnd=false;
 var conversationAccepted=false, conversationReceivedText=false, conversationLastSequence=-1;
 var conversationAudioFinalPending=false, conversationTimeout=null, conversationStage='';
+var conversationFlushTimer=null;
 var conversationPipeline=haPipeline;
 
 function conversationStopSocket() {
   if(conversationTimeout){clearTimeout(conversationTimeout);conversationTimeout=null;}
+  if(conversationFlushTimer){clearTimeout(conversationFlushTimer);conversationFlushTimer=null;}
   if(conversationSocket) {
     try {conversationSocket.onclose=null;conversationSocket.onerror=null;
       conversationSocket.onmessage=null;conversationSocket.close();}catch(e){}
@@ -174,7 +176,13 @@ function conversationFlushAudio() {
   while(conversationAudioQueue.length) {
     if(conversationSocket.readyState!==1)return;
     // Backpressure: do not feed unlimited data into a busy WebSocket.
-    if(conversationSocket.bufferedAmount>150000)return;
+    if(conversationSocket.bufferedAmount>150000) {
+      if(!conversationFlushTimer)
+        conversationFlushTimer=setTimeout(function(){
+          conversationFlushTimer=null;conversationFlushAudio();
+        },40);
+      return;
+    }
     var frame=conversationAudioQueue.shift();
     var packet=new Uint8Array(frame.length+1);
     packet[0]=conversationHandler;packet.set(frame,1);
@@ -188,7 +196,7 @@ function conversationFlushAudio() {
 }
 function conversationStart() {
   if(!haToken || !haUrl) {
-    Pebble.sendAppMessage({COMMAND:'TEXT_RESPONSE_NO_AUDIO',TEXT:'Configure Home Assistant URL and token.'});
+    conversationFailure('Configure Home Assistant URL and token.',conversationGeneration);
     return;
   }
   conversationStopSocket();
@@ -264,16 +272,18 @@ function conversationStart() {
 }
 function conversationAudioFrame(data,seq) {
   if(!conversationSocket || conversationReceivedText)return;
-  if(seq!==conversationLastSequence+1) {
-    if(conversationLastSequence===-1 && seq===0) {
-      // Valid first packet.
-    } else {
-      conversationFailure('Mic audio packet loss',conversationGeneration);return;
-    }
+  var bytes=data instanceof Uint8Array?data:new Uint8Array(data);
+  if(bytes.length!==160 && bytes.length!==320) {
+    conversationFailure('Unexpected microphone packet size',conversationGeneration);return;
   }
-  conversationLastSequence=seq;
+  var count=bytes.length/160;
+  if(seq!==conversationLastSequence+1) {
+    conversationFailure('Mic audio packet loss',conversationGeneration);return;
+  }
+  conversationLastSequence=seq+count-1;
   try {
-    conversationAudioQueue.push(decodeMicFrame(data));
+    for(var i=0;i<count;i++)
+      conversationAudioQueue.push(decodeMicFrame(bytes.subarray(i*160,(i+1)*160)));
     if(conversationAudioQueue.length>120)
       throw Error('Mic audio queue overflow');
     conversationFlushAudio();
