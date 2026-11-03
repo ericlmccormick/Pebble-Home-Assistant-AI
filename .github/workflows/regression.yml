@@ -16,6 +16,8 @@ jobs:
         run: node tests/test_wav_parser.js
       - name: Assist conversation WebSocket regression tests
         run: node tests/test_conversation.js
+      - name: Home Assistant dropdown discovery tests
+        run: node tests/test_settings_discovery.js
       - name: Home Assistant API and Pebble message contract
         run: |
           python3 - <<'PY'
