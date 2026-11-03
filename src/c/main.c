@@ -4,7 +4,7 @@
 
 #include <pebble.h>
 // Uncomment ONLY with PebbleOS SDK revision >=111 and matching firmware:
-// #define HA_ENABLE_RAW_MIC 1 
+#define HA_ENABLE_RAW_MIC 1 
 
 #define MAX_TEXT_LENGTH 2048
 // Compile with -DHA_ENABLE_RAW_MIC only against PebbleOS SDK revision >=111
