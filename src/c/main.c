@@ -58,7 +58,11 @@ static Layer *s_arrow_layer;
 static Layer *s_pinwheel_layer;                 
 static AppTimer *s_pinwheel_timer = NULL;       
 static int s_pinwheel_angle = 0;                
-static DictationSession *s_dictation_session;   
+static DictationSession *s_dictation_session;
+static bool s_auto_send = true;
+static int s_haptic_level = 2; // 0 off, 1 low, 2 medium, 3 high
+static TextLayer *s_thinking_transcript_layer;
+static char s_thinking_transcript[256];   
 static char s_ha_text[MAX_TEXT_LENGTH];     
 
 // =========================================================================
@@ -151,6 +155,12 @@ static void arrow_update_proc(Layer *layer, GContext *ctx) {
   graphics_draw_line(ctx, GPoint(x_start, y), GPoint(x_end, y));         
   graphics_draw_line(ctx, GPoint(x_end, y), GPoint(x_end - 6, y - 6));   
   graphics_draw_line(ctx, GPoint(x_end, y), GPoint(x_end - 6, y + 6));   
+}
+
+static void ha_haptic(void) {
+  if (s_haptic_level == 1) vibes_short_pulse();
+  else if (s_haptic_level == 2) vibes_double_pulse();
+  else if (s_haptic_level >= 3) vibes_long_pulse();
 }
 
 static void set_status(const char* status) {
@@ -327,7 +337,7 @@ static void update_text_layout() {
     s_volume += 0.1f;                           
     if (s_volume > 1.0f) s_volume = 1.0f;       
     persist_write_int(PERSIST_KEY_VOLUME, (int)(s_volume * 100.0f + 0.5f)); 
-    vibes_short_pulse();                        
+    ha_haptic();
     show_volume_indicator();                    
   }
 
@@ -335,7 +345,7 @@ static void update_text_layout() {
     s_volume -= 0.1f;                           
     if (s_volume < 0.0f) s_volume = 0.0f;       
     persist_write_int(PERSIST_KEY_VOLUME, (int)(s_volume * 100.0f + 0.5f)); 
-    vibes_short_pulse();                        
+    ha_haptic();
     show_volume_indicator();                    
   }
 #endif
@@ -567,8 +577,10 @@ static void set_ui_state(UIState state) {
 
   switch (state) {
     case UI_STATE_IDLE:                         
-      layer_set_hidden(s_idle_layer, false);    
-      layer_set_hidden(scroll_layer_get_layer(s_scroll_layer), true); 
+      layer_set_hidden(s_idle_layer, false);
+      if (s_thinking_transcript_layer)
+        layer_set_hidden(text_layer_get_layer(s_thinking_transcript_layer), true);
+      layer_set_hidden(scroll_layer_get_layer(s_scroll_layer), true);
       layer_set_hidden(s_arrow_layer, false);   
       layer_set_hidden(s_pinwheel_layer, true);  
       #if HA_MIC_AVAILABLE
@@ -586,13 +598,17 @@ static void set_ui_state(UIState state) {
       layer_set_hidden(scroll_layer_get_layer(s_scroll_layer), true); 
       layer_set_hidden(s_arrow_layer, true);    
       layer_set_hidden(s_pinwheel_layer, false); 
-      text_layer_set_text(s_prompt_layer, "Thinking..."); 
+      text_layer_set_text(s_prompt_layer, "Thinking...");
+      if (s_thinking_transcript_layer)
+        layer_set_hidden(text_layer_get_layer(s_thinking_transcript_layer), false); 
       if (!s_pinwheel_timer) {                   
         s_pinwheel_timer = app_timer_register(100, pinwheel_timer_callback, NULL); 
       }
       break;
     case UI_STATE_RESULTS:                      
-      layer_set_hidden(s_idle_layer, true);     
+      layer_set_hidden(s_idle_layer, true);
+      if (s_thinking_transcript_layer)
+        layer_set_hidden(text_layer_get_layer(s_thinking_transcript_layer), true);
       layer_set_hidden(scroll_layer_get_layer(s_scroll_layer), false); 
       if (s_pinwheel_timer) {                   
         app_timer_cancel(s_pinwheel_timer);     
@@ -626,8 +642,9 @@ static void inbox_received_callback(DictionaryIterator *iterator, void *context)
     Tuple *text_tuple = dict_find(iterator, MESSAGE_KEY_TEXT); 
     if (text_tuple) {
       snprintf(s_ha_text, sizeof(s_ha_text), "%s", text_tuple->value->cstring); 
-      text_layer_set_text(s_text_layer, s_ha_text); 
-      update_text_layout();                     
+      text_layer_set_text(s_text_layer, s_ha_text);
+      update_text_layout();
+      ha_haptic();                     
       
       set_ui_state(UI_STATE_RESULTS);          
 
@@ -680,6 +697,36 @@ static void inbox_received_callback(DictionaryIterator *iterator, void *context)
     }
     #endif
   }
+    else if (strcmp(command_tuple->value->cstring, "SETTINGS") == 0) {
+      Tuple *font_tuple = dict_find(iterator, MESSAGE_KEY_FONT_SIZE);
+      Tuple *auto_tuple = dict_find(iterator, MESSAGE_KEY_AUTO_SEND);
+      Tuple *haptic_tuple = dict_find(iterator, MESSAGE_KEY_HAPTIC_LEVEL);
+      if (auto_tuple) s_auto_send = auto_tuple->value->int32 != 0;
+      if (haptic_tuple) {
+        s_haptic_level = haptic_tuple->value->int32;
+        if (s_haptic_level < 0) s_haptic_level = 0;
+        if (s_haptic_level > 3) s_haptic_level = 3;
+      }
+      if (s_dictation_session)
+        dictation_session_enable_confirmation(s_dictation_session, !s_auto_send);
+      if (font_tuple) {
+        int new_size = font_tuple->value->int32;
+        if (new_size <= 14) text_layer_set_font(s_text_layer, fonts_get_system_font(FONT_KEY_GOTHIC_14));
+        else if (new_size <= 18) text_layer_set_font(s_text_layer, fonts_get_system_font(FONT_KEY_GOTHIC_18));
+        else if (new_size <= 24) text_layer_set_font(s_text_layer, fonts_get_system_font(FONT_KEY_GOTHIC_24));
+        else text_layer_set_font(s_text_layer, fonts_get_system_font(FONT_KEY_GOTHIC_28));
+        update_text_layout();
+      }
+    }
+    else if (strcmp(command_tuple->value->cstring, "HAPTIC_PREVIEW") == 0) {
+      Tuple *haptic_tuple = dict_find(iterator, MESSAGE_KEY_HAPTIC_LEVEL);
+      if (haptic_tuple) {
+        s_haptic_level = haptic_tuple->value->int32;
+        if (s_haptic_level < 0) s_haptic_level = 0;
+        if (s_haptic_level > 3) s_haptic_level = 3;
+      }
+      ha_haptic();
+    }
     else if (strcmp(command_tuple->value->cstring, "UPDATE_FONT") == 0) { 
     Tuple *font_tuple = dict_find(iterator, MESSAGE_KEY_FONT_SIZE); 
     if (font_tuple) {
@@ -694,8 +741,13 @@ static void inbox_received_callback(DictionaryIterator *iterator, void *context)
 }
 
 static void dictation_session_callback(DictationSession *session, DictationSessionStatus status, char *transcription, void *context) {
-  if (status == DictationSessionStatusSuccess) { 
-    set_ui_state(UI_STATE_THINKING);            
+  if (status == DictationSessionStatusSuccess && transcription && transcription[0]) {
+    snprintf(s_thinking_transcript, sizeof(s_thinking_transcript),
+             "You said:\n%.220s", transcription);
+    if (s_thinking_transcript_layer)
+      text_layer_set_text(s_thinking_transcript_layer, s_thinking_transcript);
+    ha_haptic();
+    set_ui_state(UI_STATE_THINKING);
     text_layer_set_text(s_text_layer, "");      
     update_text_layout();                       
 
@@ -712,7 +764,16 @@ static void dictation_session_callback(DictationSession *session, DictationSessi
     
     app_message_outbox_send();                  
   } else {
-    set_ui_state(UI_STATE_IDLE);                
+    set_ui_state(UI_STATE_IDLE);
+    if (status != DictationSessionStatusFailureTranscriptionRejected) {
+      const char *reason = "Speech recognition failed";
+      if (status == DictationSessionStatusFailureNoSpeechDetected) reason = "No speech detected";
+      else if (status == DictationSessionStatusFailureConnectivityError) reason = "Speech: check phone connection";
+      else if (status == DictationSessionStatusFailureDisabled) reason = "Dictation disabled on phone";
+      else if (status == DictationSessionStatusFailureRecognizerError) reason = "Speech recognition unavailable";
+      set_status(reason);
+      ha_haptic();
+    }
   }
 }
 
@@ -788,6 +849,16 @@ static void main_window_load(Window *window) {
   text_layer_set_text(s_prompt_layer, "Press Select\nto record");
   layer_add_child(s_idle_layer, text_layer_get_layer(s_prompt_layer));
 
+  s_thinking_transcript_layer = text_layer_create(
+      GRect(8, bounds.size.h - 79, bounds.size.w - 18, 74));
+  text_layer_set_font(s_thinking_transcript_layer,
+                      fonts_get_system_font(FONT_KEY_GOTHIC_18));
+  text_layer_set_text_color(s_thinking_transcript_layer, GColorBlack);
+  text_layer_set_background_color(s_thinking_transcript_layer, GColorClear);
+  text_layer_set_text(s_thinking_transcript_layer, "");
+  layer_set_hidden(text_layer_get_layer(s_thinking_transcript_layer), true);
+  layer_add_child(s_idle_layer, text_layer_get_layer(s_thinking_transcript_layer));
+
 #ifdef PBL_SPEAKER
   // On the home screen, identify the right-side Up/Down volume buttons.
   // Labels live inside the idle layer so they disappear when results use
@@ -829,6 +900,10 @@ static void main_window_load(Window *window) {
   #endif
 
   s_dictation_session = dictation_session_create(sizeof(s_ha_text), dictation_session_callback, NULL);
+  if (s_dictation_session) {
+    dictation_session_enable_confirmation(s_dictation_session, !s_auto_send);
+    dictation_session_enable_error_dialogs(s_dictation_session, true);
+  }
 
   set_ui_state(UI_STATE_IDLE); 
 }
@@ -848,6 +923,7 @@ static void main_window_unload(Window *window) {
   #endif
   
   dictation_session_destroy(s_dictation_session);
+  text_layer_destroy(s_thinking_transcript_layer);
   if (s_logo_bitmap) gbitmap_destroy(s_logo_bitmap);
   bitmap_layer_destroy(s_logo_layer); 
  
