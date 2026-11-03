@@ -22,7 +22,10 @@
 
 typedef enum { UI_STATE_IDLE, UI_STATE_THINKING, UI_STATE_RESULTS } UIState;
 
-static UIState s_current_state = UI_STATE_IDLE; 
+static UIState s_current_state = UI_STATE_IDLE;
+// Conversation mode is an explicit UI state until raw microphone capture
+// and HA Assist WebSocket streaming are available in the target SDK.
+static bool s_conversation_mode = false; 
 static Window *s_main_window;                   
 static ScrollLayer *s_scroll_layer;             
 static TextLayer *s_text_layer;                 
@@ -328,19 +331,16 @@ static void select_short_click_handler(ClickRecognizerRef recognizer, void *cont
 
 static void select_long_click_handler(ClickRecognizerRef recognizer, void *context) {
   #ifdef PBL_SPEAKER
-  if (s_speaker_open || s_buffer_count > 0) {
-    s_ignore_audio = true;                      
-    stop_audio();                               
-    vibes_double_pulse();                       
-    set_ui_state(UI_STATE_IDLE);                
-  }
+    s_ignore_audio = true;
+    stop_audio();
   #endif
-  
-  #ifndef PBL_SPEAKER
-  vibes_double_pulse();                         
+  s_conversation_mode = !s_conversation_mode;
+  vibes_double_pulse();
   set_ui_state(UI_STATE_IDLE);
-  #endif
 }
+
+// Long press changes mode; it deliberately does not claim to open a microphone.
+// Until continuous capture is supported, a short press still uses Pebble dictation.
 
 static void window_click_config_provider(void *context) {
   if (s_current_state == UI_STATE_RESULTS) {    
@@ -383,7 +383,9 @@ static void set_ui_state(UIState state) {
       layer_set_hidden(scroll_layer_get_layer(s_scroll_layer), true); 
       layer_set_hidden(s_arrow_layer, false);   
       layer_set_hidden(s_pinwheel_layer, true);  
-      text_layer_set_text(s_prompt_layer, "Press Select\nto record"); 
+      text_layer_set_text(s_prompt_layer,
+        s_conversation_mode ? "Conversation mode\nSTT unavailable\nTap to talk" :
+                              "Tap Select: talk\nHold: conversation"); 
       break;
     case UI_STATE_THINKING:                     
       layer_set_hidden(s_idle_layer, false);    
