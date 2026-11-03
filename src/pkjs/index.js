@@ -213,23 +213,41 @@ function lowPassFilter(samples) {
 
 // WAV returned by Home Assistant's own TTS engine via /api/tts_get_url.
 // Request PCM16 8 kHz mono; do not try to decode MP3/OGG as PCM.
+// Home Assistant Cloud can stream WAV audio with RIFF/data lengths set to
+// 0xFFFFFFFF (unknown until stream completion). XMLHttpRequest delivers the
+// entire ArrayBuffer on load, so use the actual received length for that case.
 function wavToPcm(bytes) {
+  if(!bytes || !bytes.byteLength) throw Error('Empty TTS audio');
   var view=new DataView(bytes), len=view.byteLength;
-  if(len<44 || readTag(view,0)!=='RIFF' || readTag(view,8)!=='WAVE') throw Error('TTS response is not WAV');
+  if(len<12 || readTag(view,0)!=='RIFF' || readTag(view,8)!=='WAVE')
+    throw Error('TTS response is not WAV');
   var offset=12, fmt=null, chunk=null;
   while(offset+8<=len) {
     var id=readTag(view,offset), size=view.getUint32(offset+4,true), pos=offset+8;
-    if(pos+size>len) throw Error('Truncated WAV');
+    // 0xFFFFFFFF is a valid unknown-length placeholder in streamed WAVs.
+    // It is not a literal request for 4 GiB of audio.
+    var streamedSize=(size===0xFFFFFFFF);
+    if(streamedSize) {
+      if(id!=='data') throw Error('Unknown WAV chunk length');
+      size=len-pos;
+    } else if(size>len-pos) {
+      throw Error('Truncated WAV: '+id);
+    }
     if(id==='fmt ') {
       if(size<16) throw Error('Invalid WAV format');
       fmt={format:view.getUint16(pos,true),channels:view.getUint16(pos+2,true),
         rate:view.getUint32(pos+4,true),bits:view.getUint16(pos+14,true)};
     }
-    if(id==='data') chunk={start:pos,size:size};
+    if(id==='data') {
+      chunk={start:pos,size:size};
+      // The payload ends here for both bounded and streaming data chunks.
+      break;
+    }
     offset=pos+size+(size%2);
   }
   if(!fmt || !chunk || fmt.format!==1 || fmt.channels!==1 || fmt.bits!==16 ||
     fmt.rate!==8000) throw Error('HA must return mono 8kHz 16-bit PCM WAV');
+  if(chunk.size<2) throw Error('Empty TTS PCM data');
   var n=Math.floor(chunk.size/2), pcm=new Array(n);
   for(var i=0;i<n;i++) pcm[i]=view.getInt16(chunk.start+i*2,true);
   return pcm;
