@@ -12,6 +12,8 @@ jobs:
           node-version: '22'
       - name: JavaScript syntax
         run: node --check src/pkjs/index.js
+      - name: WAV decoder regression tests
+        run: node tests/test_wav_parser.js
       - name: Home Assistant API and Pebble message contract
         run: |
           python3 - <<'PY'
