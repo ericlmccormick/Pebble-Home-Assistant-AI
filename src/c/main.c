@@ -49,7 +49,11 @@ static BitmapLayer *s_logo_layer;
                   
                
 static TextLayer *s_title_layer;                
-static TextLayer *s_prompt_layer;               
+static TextLayer *s_prompt_layer;
+#ifdef PBL_SPEAKER
+static TextLayer *s_volume_up_hint_layer;
+static TextLayer *s_volume_down_hint_layer;
+#endif               
 static Layer *s_arrow_layer;                    
 static Layer *s_pinwheel_layer;                 
 static AppTimer *s_pinwheel_timer = NULL;       
@@ -526,31 +530,6 @@ static void select_short_click_handler(ClickRecognizerRef recognizer, void *cont
   dictation_session_start(s_dictation_session); 
 }
 
-static void select_long_click_handler(ClickRecognizerRef recognizer, void *context) {
-  #ifdef PBL_SPEAKER
-    s_ignore_audio=true;stop_audio();
-  #endif
-  #if HA_MIC_AVAILABLE
-    if(s_conversation_mode) {
-      ha_mic_halt();
-      s_mic_count=0;s_mic_end_pending=false;s_mic_start_pending=false;
-      s_mic_cancel_pending=true;ha_mic_flush();
-      s_conversation_mode=false;
-    } else {
-      s_conversation_mode=true;
-      ha_mic_restart();
-    }
-  #else
-    // Unsupported SDK/firmware: don't claim to be listening.
-    s_conversation_mode=false;
-  #endif
-  vibes_double_pulse();
-  set_ui_state(UI_STATE_IDLE);
-  #if !HA_MIC_AVAILABLE
-    set_status("Raw mic needs SDK 111");
-  #endif
-}
-
 static void window_click_config_provider(void *context) {
   if (s_current_state == UI_STATE_RESULTS) {    
     window_set_click_context(BUTTON_ID_UP, s_scroll_layer); 
@@ -560,7 +539,7 @@ static void window_click_config_provider(void *context) {
     window_single_repeating_click_subscribe(BUTTON_ID_DOWN, 100, (ClickHandler) scroll_layer_scroll_down_click_handler);
     
     window_single_click_subscribe(BUTTON_ID_SELECT, select_short_click_handler); 
-    window_long_click_subscribe(BUTTON_ID_SELECT, 500, select_long_click_handler, NULL); 
+ 
     
     #ifdef PBL_SPEAKER
       window_long_click_subscribe(BUTTON_ID_UP, 500, up_volume_handler, NULL);
@@ -568,7 +547,7 @@ static void window_click_config_provider(void *context) {
     #endif
   } else {
     window_single_click_subscribe(BUTTON_ID_SELECT, select_short_click_handler); 
-    window_long_click_subscribe(BUTTON_ID_SELECT, 500, select_long_click_handler, NULL); 
+ 
     
     #ifdef PBL_SPEAKER
       window_single_click_subscribe(BUTTON_ID_UP, up_volume_handler);    
@@ -597,7 +576,7 @@ static void set_ui_state(UIState state) {
         s_conversation_mode ?
           (s_mic_capturing ? "Conversation mode\nListening..." :
                              "Conversation mode\nMicrophone unavailable") :
-          "Tap Select: talk\nHold: conversation");
+          "Press Select\nto record");
       #else
       text_layer_set_text(s_prompt_layer, "Tap Select: talk\nHold: conversation");
       #endif 
@@ -771,20 +750,20 @@ static void main_window_load(Window *window) {
 
   #if defined(PBL_ROUND) 
     s_logo_layer = bitmap_layer_create(GRect((bounds.size.w / 2) - 24, 15, 48, 48));
-    s_title_layer = text_layer_create(GRect(0, 65, bounds.size.w, 35));
+    s_title_layer = text_layer_create(GRect(0, 61, bounds.size.w, 52));
     text_layer_set_text_alignment(s_title_layer, GTextAlignmentCenter); 
 
-    s_prompt_layer = text_layer_create(GRect(10, 105, bounds.size.w - 20, 50));
+    s_prompt_layer = text_layer_create(GRect(10, 119, bounds.size.w - 20, 52));
     text_layer_set_text_alignment(s_prompt_layer, GTextAlignmentCenter); 
 
     s_arrow_layer = layer_create(GRect(bounds.size.w - 30, 110, 20, 20));
     s_pinwheel_layer = layer_create(GRect(bounds.size.w - 35, 105, 30, 30));
   #else 
     s_logo_layer = bitmap_layer_create(GRect(10, 15, 48, 48));
-    s_title_layer = text_layer_create(GRect(65, 20, bounds.size.w - 65, 40));
+    s_title_layer = text_layer_create(GRect(65, 13, bounds.size.w - 67, 60));
     text_layer_set_text_alignment(s_title_layer, GTextAlignmentLeft); 
 
-    s_prompt_layer = text_layer_create(GRect(0, 80, bounds.size.w - 30, 50));
+    s_prompt_layer = text_layer_create(GRect(5, 94, bounds.size.w - 64, 60));
     text_layer_set_text_alignment(s_prompt_layer, GTextAlignmentRight); 
 
     s_arrow_layer = layer_create(GRect(bounds.size.w - 25, 95, 25, 20));
@@ -801,13 +780,35 @@ static void main_window_load(Window *window) {
   }
   layer_add_child(s_idle_layer, bitmap_layer_get_layer(s_logo_layer));
 
-  text_layer_set_font(s_title_layer, fonts_get_system_font(FONT_KEY_GOTHIC_24_BOLD));
-  text_layer_set_text(s_title_layer, "Home AI");
+  text_layer_set_font(s_title_layer, fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD));
+  text_layer_set_text(s_title_layer, "Home\nAssistant AI");
   layer_add_child(s_idle_layer, text_layer_get_layer(s_title_layer));
 
   text_layer_set_font(s_prompt_layer, fonts_get_system_font(FONT_KEY_GOTHIC_24));
   text_layer_set_text(s_prompt_layer, "Press Select\nto record");
   layer_add_child(s_idle_layer, text_layer_get_layer(s_prompt_layer));
+
+#ifdef PBL_SPEAKER
+  // On the home screen, identify the right-side Up/Down volume buttons.
+  // Labels live inside the idle layer so they disappear when results use
+  // these buttons for scrolling (long-press Up/Down still changes volume).
+  #if !defined(PBL_ROUND)
+    s_volume_up_hint_layer = text_layer_create(
+      GRect(bounds.size.w - 59, bounds.size.h / 3 - 16, 56, 24));
+    s_volume_down_hint_layer = text_layer_create(
+      GRect(bounds.size.w - 59, (bounds.size.h * 2) / 3 - 16, 56, 24));
+    TextLayer *volume_hints[] = {s_volume_up_hint_layer, s_volume_down_hint_layer};
+    const char *volume_labels[] = {"Vol +", "Vol -"};
+    for (int i = 0; i < 2; ++i) {
+      text_layer_set_text(volume_hints[i], volume_labels[i]);
+      text_layer_set_font(volume_hints[i], fonts_get_system_font(FONT_KEY_GOTHIC_18));
+      text_layer_set_text_alignment(volume_hints[i], GTextAlignmentRight);
+      text_layer_set_background_color(volume_hints[i], GColorClear);
+      text_layer_set_text_color(volume_hints[i], GColorBlack);
+      layer_add_child(s_idle_layer, text_layer_get_layer(volume_hints[i]));
+    }
+  #endif
+#endif
 
   layer_set_update_proc(s_arrow_layer, arrow_update_proc); 
   layer_add_child(s_idle_layer, s_arrow_layer);
@@ -839,7 +840,11 @@ static void main_window_unload(Window *window) {
   #ifdef PBL_SPEAKER
     stop_audio();                               
     if (s_volume_timer) app_timer_cancel(s_volume_timer); 
-    text_layer_destroy(s_volume_text_layer);    
+    text_layer_destroy(s_volume_text_layer);
+    #if !defined(PBL_ROUND)
+      text_layer_destroy(s_volume_up_hint_layer);
+      text_layer_destroy(s_volume_down_hint_layer);
+    #endif    
   #endif
   
   dictation_session_destroy(s_dictation_session);
