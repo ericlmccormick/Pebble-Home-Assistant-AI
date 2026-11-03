@@ -669,7 +669,8 @@ function wavToPcm(bytes) {
 function readTag(view,i) {
   return String.fromCharCode(view.getUint8(i),view.getUint8(i+1),view.getUint8(i+2),view.getUint8(i+3));
 }
-function fetchWav(path,gen) {
+function fetchWav(path,gen,attempt) {
+  attempt=attempt || 0;
   return new Promise(function(resolve,reject) {
     var xhr=new XMLHttpRequest();
     var url;
@@ -684,12 +685,21 @@ function fetchWav(path,gen) {
     xhr.timeout=30000;
     xhr.onload=function() {
       if(gen!==requestGeneration) {reject(Error('Cancelled'));return;}
-      if(xhr.status!==200) {reject(Error('TTS audio HTTP '+xhr.status));return;}
+      if(xhr.status!==200) {
+        var e=Error('TTS audio HTTP '+xhr.status); e.status=xhr.status; reject(e);return;
+      }
       try {resolve(wavToPcm(xhr.response));} catch(e) {reject(e);}
     };
     xhr.onerror=function(){reject(Error('TTS audio network error'));};
     xhr.ontimeout=function(){reject(Error('TTS audio timeout'));};
     xhr.send();
+  }).catch(function(e) {
+    // Fetching generated audio is safe to retry; it cannot operate any HA devices.
+    var retryable=!e.status || e.status===429 || e.status===502 ||
+                  e.status===503 || e.status===504;
+    if(attempt<2 && retryable && gen===requestGeneration)
+      return haDelay(600*(attempt+1)).then(function(){return fetchWav(path,gen,attempt+1);});
+    throw e;
   });
 }
 function startTTSFetchLoop(gen) {
@@ -732,9 +742,21 @@ function startBLESendLoop() {
   
   isSendingBLE = true; 
   var adpcmBytes = readyAudioQueue.shift(); 
-  var cursor = 0; 
-
+  var cursor = 0;
+  var failureCount = 0;
+  var generation = requestGeneration;
+  function audioSendFailed() {
+    if(generation!==requestGeneration)return;
+    isSendingBLE=false;
+    readyAudioQueue=[]; sentenceQueue=[]; isFetchingTTS=false;
+    conversationAudioFinalPending=false;
+    ++requestGeneration; // invalidate any queued TTS delivery
+    console.log('Pebble Bluetooth audio delivery failed after retries');
+    Pebble.sendAppMessage({COMMAND:'TEXT_RESPONSE_NO_AUDIO',
+      TEXT:lastAnswer.substring(0,1900)});
+  }
   function sendNextChunk() {
+    if(generation!==requestGeneration)return;
     var previousCursor = cursor; 
     var chunk = [];              
     var chunkSize = 700;         
@@ -746,8 +768,15 @@ function startBLESendLoop() {
     if (chunk.length > 0) {
       Pebble.sendAppMessage(
         { 'COMMAND': 'AUDIO_CHUNK', 'CHUNK': chunk },
-        function success() { setTimeout(sendNextChunk, 60); }, 
-        function failure() { cursor = previousCursor; setTimeout(sendNextChunk, 200); } 
+        function success() {
+          failureCount=0;
+          setTimeout(sendNextChunk, 60);
+        },
+        function failure() {
+          cursor=previousCursor;
+          if(++failureCount>=5){audioSendFailed();return;}
+          setTimeout(sendNextChunk, 250*failureCount);
+        } 
       );
     } else {
       Pebble.sendAppMessage(
@@ -756,9 +785,9 @@ function startBLESendLoop() {
             isSendingBLE = false; 
             setTimeout(function(){startBLESendLoop();conversationMaybeCompleteAudio();}, 120); 
         },
-        function() { 
-            isSendingBLE = false;
-            setTimeout(function(){startBLESendLoop();conversationMaybeCompleteAudio();}, 300); 
+        function() {
+            if(++failureCount>=5){audioSendFailed();return;}
+            setTimeout(sendNextChunk, 250*failureCount);
         }
       );
     }
