@@ -14,6 +14,7 @@ try {
   hasSpeaker = !!(watchInfo && watchInfo.platform === 'emery');
 } catch (err) { hasSpeaker = false; }
 var audioProfile = '8k-16b';
+var lastAnswer = '';
 var sentenceQueue = [], readyAudioQueue = [];
 var isFetchingTTS = false, isSendingBLE = false, requestGeneration = 0;
 var js_adpcm_valpred = 0, js_adpcm_index = 0;
@@ -139,6 +140,7 @@ function askHomeAssistant(prompt,skipAudio) {
       haConversationId=data.conversation_id;
       localStorage.setItem('HA_CONVERSATION_ID',haConversationId);
     }
+    lastAnswer = message;
     Pebble.sendAppMessage({
       COMMAND:skipAudio?'TEXT_RESPONSE_NO_AUDIO':'TEXT_RESPONSE_8_16',
       TEXT:message.substring(0,1900)
@@ -283,6 +285,8 @@ function startTTSFetchLoop(gen) {
     // Keep the text response even when TTS generation fails.
     console.log('Home Assistant TTS error: '+String(err.message||err));
     sentenceQueue=[];
+    // Preserve the AI text answer and clear the watch's buffering indicator.
+    Pebble.sendAppMessage({COMMAND:'TEXT_RESPONSE_NO_AUDIO',TEXT:lastAnswer.substring(0,1900)});
   });
 }
 function startBLESendLoop() {
