@@ -14,6 +14,8 @@ jobs:
         run: node --check src/pkjs/index.js
       - name: WAV decoder regression tests
         run: node tests/test_wav_parser.js
+      - name: Assist conversation WebSocket regression tests
+        run: node tests/test_conversation.js
       - name: Home Assistant API and Pebble message contract
         run: |
           python3 - <<'PY'
