@@ -27,12 +27,18 @@
       "basalt",
       "chalk",
       "diorite",
-      "emery"
+      "emery",
+      "flint",
+      "gabbro"
     ],
     "uuid": "9d7ba0b9-5499-4b3b-9cd1-4c673901dc87",
     "watchapp": {
       "watchface": false
-    }
+    },
+    "manifestVersion": 2,
+    "usesPermissions": [
+      "Microphone"
+    ]
   },
   "version": "0.1.0"
 }
