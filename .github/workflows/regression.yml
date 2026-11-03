@@ -43,6 +43,9 @@ jobs:
           assert 'texttospeech.googleapis.com' not in js
           assert pkg['pebble']['displayName'] == 'Home Assistant AI'
           assert 'select_long_click_handler' not in c
+          assert 'window_single_click_subscribe(BUTTON_ID_BACK, results_back_click_handler)' in c
+          assert 'set_ui_state(UI_STATE_IDLE);' in c
+          assert c.count('window_single_click_subscribe(BUTTON_ID_BACK') == 1
           assert 'window_long_click_subscribe(BUTTON_ID_SELECT' not in c
           assert '"Home\\nAssistant AI"' in c
           assert '"Vol +"' in c and '"Vol -"' in c
