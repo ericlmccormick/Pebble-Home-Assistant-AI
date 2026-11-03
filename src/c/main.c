@@ -537,7 +537,17 @@ static void select_short_click_handler(ClickRecognizerRef recognizer, void *cont
       ha_mic_flush();s_conversation_mode=false;s_mic_waiting=true;
     }
   #endif
-  dictation_session_start(s_dictation_session); 
+  set_status(NULL);
+  if (!s_dictation_session) {
+    set_status("Microphone unavailable");
+    ha_haptic();
+    return;
+  }
+  DictationSessionStatus result = dictation_session_start(s_dictation_session);
+  if (result != DictationSessionStatusSuccess) {
+    set_status("Unable to start dictation");
+    ha_haptic();
+  }
 }
 
 static void window_click_config_provider(void *context) {
@@ -751,8 +761,14 @@ static void dictation_session_callback(DictationSession *session, DictationSessi
     text_layer_set_text(s_text_layer, "");      
     update_text_layout();                       
 
-    DictionaryIterator *iter;                   
-    app_message_outbox_begin(&iter);            
+    DictionaryIterator *iter = NULL;
+    AppMessageResult outbox_result = app_message_outbox_begin(&iter);
+    if (outbox_result != APP_MSG_OK || !iter) {
+      set_ui_state(UI_STATE_IDLE);
+      set_status("Phone message queue busy");
+      ha_haptic();
+      return;
+    }
     dict_write_cstring(iter, MESSAGE_KEY_COMMAND, "DICTATION"); 
     dict_write_cstring(iter, MESSAGE_KEY_TEXT, transcription);  
     
@@ -762,7 +778,11 @@ static void dictation_session_callback(DictationSession *session, DictationSessi
       dict_write_int32(iter, MESSAGE_KEY_VOLUME, 0); 
     #endif
     
-    app_message_outbox_send();                  
+    if (app_message_outbox_send() != APP_MSG_OK) {
+      set_ui_state(UI_STATE_IDLE);
+      set_status("Could not send to phone");
+      ha_haptic();
+    }
   } else {
     set_ui_state(UI_STATE_IDLE);
     if (status != DictationSessionStatusFailureTranscriptionRejected) {
