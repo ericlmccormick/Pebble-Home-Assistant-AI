@@ -40,15 +40,15 @@ var clayConfig = [
     {type:'input',messageKey:'HA_TOKEN',label:'Long-lived access token',
       description:haToken?'Token saved; leave blank to keep it':'Required; created in Home Assistant user profile',
       attributes:{type:'password',placeholder:haToken?'Saved; leave empty':'Paste token'}},
-    {type:'input',messageKey:'HA_PIPELINE',label:'Assist pipeline ID (conversation mode)',defaultValue:haPipeline,
-      description:'Optional; blank uses preferred Assist pipeline. This sets Cloud STT and Google AI together.'},
-    {type:'input',messageKey:'HA_AGENT',label:'Conversation agent ID (optional)',defaultValue:haAgent,
-      description:'Leave blank to use Home Assistant default. Example: conversation.home_assistant'}
+    {type:'input',messageKey:'HA_PIPELINE',label:'Speech-to-text / Assist pipeline',defaultValue:haPipeline,
+      description:'Used by hands-free conversation mode. Choose the pipeline containing your desired STT engine; blank uses the preferred Assist pipeline.'},
+    {type:'input',messageKey:'HA_AGENT',label:'Conversation agent (tap-to-talk)',defaultValue:haAgent,
+      description:'Choose Google AI or another agent. Blank uses Home Assistant default; separate from the conversation-mode pipeline.'}
   ]},
   {type:'section',items:[
     {type:'heading',defaultValue:'Home Assistant Speech'},
-    {type:'input',messageKey:'HA_TTS',label:'TTS entity ID',defaultValue:haTts,
-      description:'Example: tts.piper. Required for spoken replies; uses the voice set on that HA entity.'},
+    {type:'input',messageKey:'HA_TTS',label:'Text-to-speech engine',defaultValue:haTts,
+      description:'Speech playback entity, e.g. tts.home_assistant_cloud. Blank disables TTS.'},
     {type:'toggle',messageKey:'ENABLE_TTS',label:'Speak responses on watch',defaultValue:enableTts,
       description:'Only on speaker-equipped Pebbles. Always displays text.'},
     {type:'toggle',messageKey:'RESET_CHAT',label:'Start new conversation',defaultValue:false,
@@ -60,8 +60,145 @@ var clayConfig = [
   ]},
   {type:'submit',defaultValue:'Save Settings'}
 ];
+// Build dropdowns from the connected Home Assistant instance whenever the
+// settings page opens. Keep the original input controls as an offline fallback.
 var clay = new Clay(clayConfig, null, {autoHandleEvents:false});
-Pebble.addEventListener('showConfiguration',function() { Pebble.openURL(clay.generateUrl()); });
+var configDiscoveryGeneration=0;
+
+function configField(key) {
+  for(var i=0;i<clayConfig.length;i++) {
+    var section=clayConfig[i];
+    if(!section.items)continue;
+    for(var j=0;j<section.items.length;j++)
+      if(section.items[j].messageKey===key)return section.items[j];
+  }
+  return null;
+}
+function configLabel(state) {
+  var friendly=state.attributes && state.attributes.friendly_name;
+  return String(friendly||state.entity_id)+' ('+state.entity_id+')';
+}
+function configOptionsForDomain(states,domain,current,includeDefault) {
+  var options=includeDefault?[{label:'Use Home Assistant default',value:''}]:[];
+  var ids={};
+  for(var i=0;i<states.length;i++) {
+    var state=states[i],id=state && state.entity_id;
+    if(typeof id!=='string' || id.indexOf(domain+'.')!==0 || ids[id])continue;
+    ids[id]=true;
+    options.push({label:configLabel(state),value:id});
+  }
+  options.sort(function(a,b){
+    if(includeDefault && (!a.value||!b.value))return a.value?1:-1;
+    return a.label.localeCompare(b.label);
+  });
+  if(current && !ids[current])
+    options.push({label:'Previously selected: '+current,value:current});
+  return options;
+}
+function configUseSelect(key,options,current) {
+  var field=configField(key);
+  if(!field || !options || !options.length)return;
+  field.type='select';
+  field.options=options;
+  field.defaultValue=current;
+  delete field.attributes;
+}
+function configUseInput(key,current) {
+  var field=configField(key);
+  if(!field)return;
+  field.type='input';
+  field.defaultValue=current;
+  delete field.options;
+}
+function configApplyEntities(states) {
+  if(!Array.isArray(states))throw Error('Unexpected /api/states response');
+  var agents=configOptionsForDomain(states,'conversation',haAgent,true);
+  var engines=configOptionsForDomain(states,'tts',haTts,true);
+  if(agents.length>1 || haAgent)configUseSelect('HA_AGENT',agents,haAgent);
+  if(engines.length>1 || haTts)configUseSelect('HA_TTS',engines,haTts);
+}
+function configApplyPipelines(result) {
+  if(!result || !Array.isArray(result.pipelines))throw Error('Unexpected Assist pipeline list');
+  var options=[{label:'Preferred Home Assistant pipeline',value:''}];
+  var found={};
+  for(var i=0;i<result.pipelines.length;i++) {
+    var p=result.pipelines[i];
+    if(!p || !p.id || found[p.id])continue;
+    found[p.id]=true;
+    var parts=[p.name||p.id];
+    if(p.stt_engine)parts.push('STT: '+p.stt_engine);
+    if(p.conversation_engine)parts.push('AI: '+p.conversation_engine);
+    options.push({label:parts.join(' — '),value:p.id});
+  }
+  if(haPipeline && !found[haPipeline])
+    options.push({label:'Previously selected: '+haPipeline,value:haPipeline});
+  if(options.length>1 || haPipeline)configUseSelect('HA_PIPELINE',options,haPipeline);
+}
+function configListPipelines() {
+  return new Promise(function(resolve,reject) {
+    var ws,completed=false,timer;
+    function done(error,result) {
+      if(completed)return;
+      completed=true;
+      if(timer)clearTimeout(timer);
+      if(ws) {
+        ws.onmessage=null;ws.onopen=null;ws.onerror=null;ws.onclose=null;
+        try{ws.close();}catch(e){}
+      }
+      if(error)reject(error);else resolve(result);
+    }
+    try {
+      var url=normalizeUrl().replace(/^https:/i,'wss:')+'/api/websocket';
+      ws=new WebSocket(url);
+      timer=setTimeout(function(){done(Error('Pipeline discovery timed out'));},3500);
+      ws.onmessage=function(e) {
+        var m;
+        try{m=JSON.parse(e.data);}catch(ex){done(ex);return;}
+        if(m.type==='auth_required')
+          ws.send(JSON.stringify({type:'auth',access_token:haToken}));
+        else if(m.type==='auth_invalid')done(Error('Home Assistant authentication failed'));
+        else if(m.type==='auth_ok')
+          ws.send(JSON.stringify({id:9162,type:'assist_pipeline/pipeline/list'}));
+        else if(m.type==='result' && m.id===9162) {
+          if(m.success)done(null,m.result);
+          else done(Error('Assist pipeline listing refused'));
+        }
+      };
+      ws.onerror=function(){done(Error('Pipeline discovery socket failed'));};
+      ws.onclose=function(){done(Error('Pipeline discovery disconnected'));};
+    } catch(error){done(error);}
+  });
+}
+function configLoadThenOpen() {
+  var generation=++configDiscoveryGeneration;
+  // Always refresh the defaults. A previous dropdown must never hide a
+  // missing provider after the HA instance or credentials change.
+  configUseInput('HA_AGENT',haAgent);
+  configUseInput('HA_TTS',haTts);
+  configUseInput('HA_PIPELINE',haPipeline);
+  if(!haUrl || !haToken) {
+    clay=new Clay(clayConfig,null,{autoHandleEvents:false});
+    Pebble.openURL(clay.generateUrl());return;
+  }
+  var statesPromise=fetch(normalizeUrl()+'/api/states',{
+    method:'GET',headers:{Authorization:'Bearer '+haToken}
+  }).then(function(r){
+    if(!r.ok)throw Error('Entity discovery HTTP '+r.status);
+    return r.json();
+  }).then(function(states){
+    if(generation===configDiscoveryGeneration)configApplyEntities(states);
+  }).catch(function(e){console.log('HA entity dropdown discovery: '+e.message);});
+  var pipelinesPromise=configListPipelines().then(function(result){
+    if(generation===configDiscoveryGeneration)configApplyPipelines(result);
+  }).catch(function(e){console.log('HA pipeline dropdown discovery: '+e.message);});
+  // Allow slow/offline HA to fail gracefully while preserving manual inputs.
+  Promise.all([statesPromise,pipelinesPromise]).then(function() {
+    if(generation!==configDiscoveryGeneration)return;
+    clay=new Clay(clayConfig,null,{autoHandleEvents:false});
+    Pebble.openURL(clay.generateUrl());
+  });
+}
+Pebble.addEventListener('showConfiguration',configLoadThenOpen);
 Pebble.addEventListener('webviewclosed',function(e) {
   if (!e || !e.response || e.response === 'CANCELLED') return;
   var s;
