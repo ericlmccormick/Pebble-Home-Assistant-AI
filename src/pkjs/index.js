@@ -7,6 +7,10 @@ var haTts = localStorage.getItem('HA_TTS') || '';
 var haPipeline = localStorage.getItem('HA_PIPELINE') || '';
 var haConversationId = localStorage.getItem('HA_CONVERSATION_ID') || '';
 var enableTts = localStorage.getItem('ENABLE_TTS') !== 'false';
+var autoSend = localStorage.getItem('AUTO_SEND') !== 'false';
+var textOnly = localStorage.getItem('TEXT_ONLY') === 'true';
+var hapticLevel = localStorage.getItem('HAPTIC_LEVEL') || 'medium';
+var hapticValues = {off:0,low:1,medium:2,high:3};
 var fontSize = parseInt(localStorage.getItem('FONT_SIZE') || '24', 10);
 var watchInfo = null, hasSpeaker = false;
 try {
@@ -51,12 +55,20 @@ var clayConfig = [
       description:'Speech playback entity, e.g. tts.home_assistant_cloud. Blank disables TTS.'},
     {type:'toggle',messageKey:'ENABLE_TTS',label:'Speak responses on watch',defaultValue:enableTts,
       description:'Only on speaker-equipped Pebbles. Always displays text.'},
+    {type:'toggle',messageKey:'TEXT_ONLY',label:'Text-only responses',defaultValue:textOnly,
+      description:'Never play spoken responses, even if TTS is configured.'},
+    {type:'toggle',messageKey:'AUTO_SEND',label:'Send speech without confirmation',defaultValue:autoSend,
+      description:'Send recognized words automatically; show them while waiting. Native speech error dialogs remain enabled.'},
     {type:'toggle',messageKey:'RESET_CHAT',label:'Start new conversation',defaultValue:false,
       description:'Clear stored Home Assistant conversation ID'}
   ]},
   {type:'section',items:[
     {type:'heading',defaultValue:'Display'},
-    {type:'slider',messageKey:'FONT_SIZE',label:'Font size',defaultValue:fontSize,min:14,max:28,step:2}
+    {type:'slider',messageKey:'FONT_SIZE',label:'Font size',defaultValue:fontSize,min:14,max:28,step:2},
+    {type:'select',messageKey:'HAPTIC_LEVEL',label:'Vibration feedback',defaultValue:hapticLevel,
+      description:'A sample pulse plays on the watch after you save a new level.',
+      options:[{label:'Off',value:'off'},{label:'Low - short',value:'low'},
+               {label:'Medium - double',value:'medium'},{label:'High - long',value:'high'}]}
   ]},
   {type:'submit',defaultValue:'Save Settings'}
 ];
@@ -228,15 +240,38 @@ Pebble.addEventListener('webviewclosed',function(e) {
     enableTts = !!s.ENABLE_TTS.value;
     localStorage.setItem('ENABLE_TTS',enableTts?'true':'false');
   }
-  if (s.FONT_SIZE) {
-    fontSize = parseInt(s.FONT_SIZE.value,10) || 24;
-    localStorage.setItem('FONT_SIZE',String(fontSize));
-    Pebble.sendAppMessage({COMMAND:'UPDATE_FONT',FONT_SIZE:fontSize});
+  if (s.TEXT_ONLY) {
+    textOnly=!!s.TEXT_ONLY.value;
+    localStorage.setItem('TEXT_ONLY',textOnly?'true':'false');
   }
+  if (s.AUTO_SEND) {
+    autoSend=!!s.AUTO_SEND.value;
+    localStorage.setItem('AUTO_SEND',autoSend?'true':'false');
+  }
+  var preview=false;
+  if (s.HAPTIC_LEVEL && hapticValues.hasOwnProperty(String(s.HAPTIC_LEVEL.value))) {
+    var selected=String(s.HAPTIC_LEVEL.value);
+    preview=selected!==hapticLevel;
+    hapticLevel=selected;
+    localStorage.setItem('HAPTIC_LEVEL',hapticLevel);
+  }
+  if (s.FONT_SIZE) {
+    fontSize=parseInt(s.FONT_SIZE.value,10) || 24;
+    localStorage.setItem('FONT_SIZE',String(fontSize));
+  }
+  sendWatchSettings(preview);
 });
-Pebble.addEventListener('ready',function() {
-  Pebble.sendAppMessage({COMMAND:'UPDATE_FONT',FONT_SIZE:fontSize});
-});
+function sendWatchSettings(preview) {
+  Pebble.sendAppMessage({
+    COMMAND:'SETTINGS',FONT_SIZE:fontSize,
+    AUTO_SEND:autoSend?1:0,HAPTIC_LEVEL:hapticValues[hapticLevel] || 0
+  },function() {
+    if(preview) Pebble.sendAppMessage({
+      COMMAND:'HAPTIC_PREVIEW',HAPTIC_LEVEL:hapticValues[hapticLevel] || 0
+    });
+  },function(error){console.log('Watch settings delivery failed '+JSON.stringify(error));});
+}
+Pebble.addEventListener('ready',function() {sendWatchSettings(false);});
 function errText(message) {
   Pebble.sendAppMessage({COMMAND:'TEXT_RESPONSE_NO_AUDIO',TEXT:String(message).substring(0,250)});
 }
@@ -245,15 +280,47 @@ function normalizeUrl() {
   if (!/^https:\/\/[^\s/]+/i.test(u)) throw Error('Use an HTTPS Home Assistant URL.');
   return u;
 }
+// Never replay a timed-out device command: HA may already have acted on it.
+function haDelay(ms){return new Promise(function(resolve){setTimeout(resolve,ms);});}
+function haRequestError(code) {
+  var msg = code===401 || code===403 ? 'Home Assistant token rejected ('+code+')' :
+    code===404 ? 'Home Assistant API or entity not found (404)' :
+    code===429 ? 'Home Assistant is rate-limiting (429)' :
+    code>=500 ? 'Home Assistant unavailable (HTTP '+code+')' : 'Home Assistant HTTP '+code;
+  var e=Error(msg);e.status=code;return e;
+}
 function haJson(path,payload) {
-  return fetch(normalizeUrl()+path, {
-    method:'POST',
-    headers:{'Authorization':'Bearer '+haToken,'Content-Type':'application/json'},
-    body:JSON.stringify(payload)
-  }).then(function(r) {
-    if (!r.ok) throw Error('Home Assistant HTTP '+r.status);
-    return r.json();
-  });
+  var safe=path==='/api/tts_get_url';
+  function attempt(n) {
+    return new Promise(function(resolve,reject) {
+      var settled=false, maxTime=safe?14000:20000;
+      var timer=setTimeout(function(){
+        if(!settled){settled=true;reject(Error('Home Assistant timed out after '+(maxTime/1000)+' seconds')); }
+      },maxTime);
+      try {
+        fetch(normalizeUrl()+path,{
+          method:'POST',
+          headers:{'Authorization':'Bearer '+haToken,'Content-Type':'application/json'},
+          body:JSON.stringify(payload)
+        }).then(function(r) {
+          if(!r.ok)throw haRequestError(r.status);
+          return r.json();
+        }).then(function(data){
+          if(!settled){settled=true;clearTimeout(timer);resolve(data);}
+        }).catch(function(e){
+          if(!settled){settled=true;clearTimeout(timer);
+            reject(e && e.message ? e : Error('Cannot connect to Home Assistant'));}
+        });
+      }catch(e){if(!settled){settled=true;clearTimeout(timer);reject(e);}}
+    }).catch(function(e) {
+      var retryable=e && (e.status===429 ||
+        (safe && (e.status===502 || e.status===503 || e.status===504)));
+      if(n<(safe?2:1) && retryable)
+        return haDelay((n+1)*750).then(function(){return attempt(n+1);});
+      throw e;
+    });
+  }
+  return attempt(0);
 }
 // ------------------------------------------------------------------------
 // Optional hands-free path (requires PebbleOS SDK >=111 + Microphone permission)
@@ -427,7 +494,7 @@ function conversationAudioFrame(data,seq) {
   }catch(e){conversationFailure(e.message,conversationGeneration);}
 }
 function conversationShowReply(reply,gen) {
-  var canSpeak=hasSpeaker && enableTts && haTts;
+  var canSpeak=hasSpeaker && enableTts && !textOnly && haTts;
   var cmd=canSpeak?'TEXT_RESPONSE_8_16':'TEXT_RESPONSE_NO_AUDIO';
   lastAnswer=reply;
   Pebble.sendAppMessage({COMMAND:cmd,TEXT:reply.substring(0,1900)},
@@ -465,7 +532,7 @@ Pebble.addEventListener('appmessage',function(e) {
   if (d.COMMAND !== 'DICTATION') return;
   if (!haUrl || !haToken) { errText('Set Home Assistant URL and token in settings.'); return; }
   if (!d.TEXT) {errText('No dictation captured.'); return;}
-  var skipAudio=!hasSpeaker || !enableTts || !haTts || d.VOLUME === 0;
+  var skipAudio=textOnly || !hasSpeaker || !enableTts || !haTts || d.VOLUME === 0;
   askHomeAssistant(d.TEXT,skipAudio);
 });
 function askHomeAssistant(prompt,skipAudio) {
