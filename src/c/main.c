@@ -590,9 +590,15 @@ static void set_ui_state(UIState state) {
       layer_set_hidden(scroll_layer_get_layer(s_scroll_layer), true); 
       layer_set_hidden(s_arrow_layer, false);   
       layer_set_hidden(s_pinwheel_layer, true);  
+      #if HA_MIC_AVAILABLE
       text_layer_set_text(s_prompt_layer,
-        s_conversation_mode ? "Conversation mode\nListening..." :
-                              "Tap Select: talk\nHold: conversation"); 
+        s_conversation_mode ?
+          (s_mic_capturing ? "Conversation mode\nListening..." :
+                             "Conversation mode\nMicrophone unavailable") :
+          "Tap Select: talk\nHold: conversation");
+      #else
+      text_layer_set_text(s_prompt_layer, "Tap Select: talk\nHold: conversation");
+      #endif 
       break;
     case UI_STATE_THINKING:                     
       layer_set_hidden(s_idle_layer, false);    
