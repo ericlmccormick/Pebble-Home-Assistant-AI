@@ -86,6 +86,30 @@ The original project's C dictation, scrolling, ADPCM speaker code and BLE chunk 
 
 Conversation and TTS entity dropdowns are dynamically discovered from Home Assistant when the settings page opens. The default build continues to use Pebble STT. The optional SDK 111 raw microphone build uses Home Assistant Assist WebSocket STT and the preferred (or explicitly configured) Assist pipeline.
 
+## Conversation mode on current CloudPebble
+
+The `native-mic-conversation` branch now supports an SDK-compatible
+**turn-by-turn conversation mode** without revision 110 microphone headers.
+On any supported watch, **long-press Select** to enter the mode. Pebble's
+normal dictation dialog listens for an utterance and produces text; the phone
+sends it to Home Assistant's configured conversation agent with the saved
+conversation ID. The watch displays or speaks the reply, then automatically
+opens dictation again after the text reply or speaker playback completes.
+**Long-press Select again** to turn the mode off when the watch UI is active;
+Back also exits conversation mode. A single Select continues to use ordinary
+one-shot dictation.
+
+This is an intentional compatibility fallback, not continuous raw microphone
+capture: Pebble's dictation UI appears on every turn, and speech recognition
+uses the phone's normal Pebble dictation service. The fallback is controlled
+by the absence of `HA_ENABLE_NATIVE_MIC_STREAM`. Enable that macro only with
+a compiler exporting PebbleOS SDK revision 110+; doing so switches to the
+native phone audio stream, WebSocket Assist STT and voice activity detection.
+Do not enable it in CloudPebble with the older SDK.
+
+The GitHub regression suite includes a legacy dictation conversation test.
+Hardware dictation and audio playback still require actual watch testing.
+
 ## Manual tests
 
 1. Set the URL/token and ask the current time or light status.
