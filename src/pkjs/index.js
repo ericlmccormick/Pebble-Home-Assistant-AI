@@ -507,7 +507,11 @@ function nativeEndTurn() {
   if(!nativeMicMode || nativeMicWaiting)return;
   nativeMicWaiting=true;
   Pebble.sendAppMessage({COMMAND:'MIC_TURN_END'},function(){},
-    function(){console.log('Unable to stop watch microphone');});
+    function(){
+      console.log('Unable to stop watch microphone');
+      nativeCancel();
+      Pebble.sendAppMessage({COMMAND:'MIC_MODE_OFF'});
+    });
   nativeStopTimer=setTimeout(function(){
     nativeStopTimer=null;
     // A lost stop event must not leave Home Assistant waiting indefinitely.
@@ -556,10 +560,9 @@ Pebble.addEventListener('audiostream',function(e) {
       for(var i=0;i<nativePreRoll.length;i++)nativeQueuePcm(nativePreRoll[i]);
       nativePreRoll=[];nativePreRollBytes=0;
     }
-    // Avoid indefinite battery use in a room without speech.
-    if(nativeTotalMs>=22000 && !nativeSpeechStarted) {
-      nativeEndTurn();
-    }
+    // Remain in listening mode through quiet periods. This is a deliberate
+    // user-enabled session, not a 22-second voice recorder. The OS keeps
+    // its Listening indicator active until the user explicitly stops.
     return;
   }
   nativeQueuePcm(pcm);
