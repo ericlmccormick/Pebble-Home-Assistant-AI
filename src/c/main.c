@@ -441,6 +441,9 @@ static void native_mic_toggle(void) {
 
 // Legacy SDK fallback: dictation produces recognized text, not raw PCM.
 // Reopen Pebble's dictation UI after each Home Assistant answer finishes.
+// Back on the Pebble dictation overlay is delivered as a rejected transcription;
+// this must end conversation mode and clear the status rather than implying
+// that the microphone is still recording.
 static void conversation_resume_callback(void *context) {
   s_conversation_resume_timer = NULL;
   if (!s_conversation_mode || !s_dictation_fallback || s_conversation_dictating) return;
@@ -450,7 +453,7 @@ static void conversation_resume_callback(void *context) {
     return;
   }
   set_ui_state(UI_STATE_IDLE);
-  set_status("Conversation: listening");
+  set_status("Conversation: dictation");
   s_conversation_dictating = true;
   DictationSessionStatus result = dictation_session_start(s_dictation_session);
   if (result != DictationSessionStatusSuccess) {
@@ -474,12 +477,19 @@ static void conversation_disable(void) {
     s_conversation_resume_timer = NULL;
   }
   s_conversation_audio_complete = false;
+  if (s_conversation_dictating && s_dictation_session) {
+    // Back/Select during a dictation turn must stop the modal voice UI too.
+    // Pebble will not call our result handler after an explicit stop.
+    dictation_session_stop(s_dictation_session);
+  }
   s_conversation_dictating = false;
 #if HA_MIC_AVAILABLE
   if (s_conversation_mode && !s_dictation_fallback) native_mic_disable();
 #endif
   s_conversation_mode = false;
   s_dictation_fallback = false;
+  // Do not leave a stale "listening" claim visible after a cancelled turn.
+  set_status(NULL);
 }
 static void conversation_toggle(void) {
   if (s_conversation_mode) {
@@ -609,8 +619,10 @@ static void set_ui_state(UIState state) {
       layer_set_hidden(s_arrow_layer, false);   
       layer_set_hidden(s_pinwheel_layer, true);  
       text_layer_set_text(s_prompt_layer,
-        s_conversation_mode ? "Conversation mode\nListening..." :
-                              "Press Select\nto record"); 
+        s_conversation_mode ?
+          (s_dictation_fallback ? "Conversation\nDictation mode" :
+                                  "Conversation\nListening...") :
+          "Press Select\nto record"); 
       break;
     case UI_STATE_THINKING:                     
       layer_set_hidden(s_idle_layer, false);    
@@ -828,9 +840,12 @@ static void dictation_session_callback(DictationSession *session, DictationSessi
       ha_haptic();
     }
   } else {
+    bool cancelled = status == DictationSessionStatusFailureTranscriptionRejected ||
+                     status == DictationSessionStatusFailureTranscriptionRejectedWithError;
     if (s_conversation_mode && s_dictation_fallback) conversation_disable();
     set_ui_state(UI_STATE_IDLE);
-    if (status != DictationSessionStatusFailureTranscriptionRejected) {
+    set_status(NULL);
+    if (!cancelled) {
       const char *reason = "Speech recognition failed";
       if (status == DictationSessionStatusFailureNoSpeechDetected) reason = "No speech detected";
       else if (status == DictationSessionStatusFailureConnectivityError) reason = "Speech: check phone connection";
