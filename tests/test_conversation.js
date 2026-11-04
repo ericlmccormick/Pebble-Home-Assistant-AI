@@ -44,6 +44,10 @@ function pcm(amplitude) {
 }
 event('appmessage',{payload:{COMMAND:'MIC_MODE_ON'}});
 event('audiostreamstart',{sampleRate:16000,format:'pcm16le'});
+// Idle silence must NOT terminate a continuous listening session.
+for(let i=0;i<1200;i++)event('audiostream',{data:pcm(0)});
+assert(!sent.some(p=>p.COMMAND==='MIC_TURN_END'),
+  'quiet room must not stop continuous listening');
 for(let i=0;i<5;i++)event('audiostream',{data:pcm(1000)});
 assert(opened,'speech should start HA WebSocket');
 assert.strictEqual(opened.url,'wss://test.example/api/websocket');
