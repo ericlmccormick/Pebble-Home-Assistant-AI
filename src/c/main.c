@@ -38,9 +38,11 @@ static UIState s_current_state = UI_STATE_IDLE;
 // Conversation mode is an explicit UI state until raw microphone capture
 // and HA Assist WebSocket streaming are available in the target SDK.
 static bool s_conversation_mode = false;
-#if HA_MIC_AVAILABLE && defined(PBL_SPEAKER)
-static bool s_conversation_audio_complete=false;
-#endif 
+static bool s_dictation_fallback = false;
+static bool s_conversation_dictating = false;
+static AppTimer *s_conversation_resume_timer = NULL;
+static bool s_conversation_audio_complete = false;
+
 static Window *s_main_window;                   
 static ScrollLayer *s_scroll_layer;             
 static TextLayer *s_text_layer;                 
@@ -111,6 +113,8 @@ static char s_ha_text[MAX_TEXT_LENGTH];
 
 static void set_ui_state(UIState state);       
 static void window_click_config_provider(void *context);
+static void conversation_disable(void);
+static void conversation_schedule_resume(void);
 #if HA_MIC_AVAILABLE
 static void native_mic_start(void);
 static void native_mic_disable(void);
@@ -257,9 +261,10 @@ static void update_text_layout() {
     if (s_buffer_count == 0 && s_speaker_open) { 
       speaker_stream_close();                   
       s_speaker_open = false;
-      #if HA_MIC_AVAILABLE
-      if(s_conversation_audio_complete){s_conversation_audio_complete=false;native_mic_start();}
-      #endif
+      if(s_conversation_audio_complete){
+        s_conversation_audio_complete=false;
+        conversation_schedule_resume();
+      }
     }
   }
 
@@ -434,6 +439,70 @@ static void native_mic_toggle(void) {
 }
 #endif
 
+// Legacy SDK fallback: dictation produces recognized text, not raw PCM.
+// Reopen Pebble's dictation UI after each Home Assistant answer finishes.
+static void conversation_resume_callback(void *context) {
+  s_conversation_resume_timer = NULL;
+  if (!s_conversation_mode || !s_dictation_fallback || s_conversation_dictating) return;
+  if (!s_dictation_session) {
+    conversation_disable();
+    set_status("Dictation unavailable");
+    return;
+  }
+  set_ui_state(UI_STATE_IDLE);
+  set_status("Conversation: listening");
+  s_conversation_dictating = true;
+  DictationSessionStatus result = dictation_session_start(s_dictation_session);
+  if (result != DictationSessionStatusSuccess) {
+    s_conversation_dictating = false;
+    conversation_disable();
+    set_status("Unable to restart dictation");
+    ha_haptic();
+  }
+}
+static void conversation_schedule_resume(void) {
+  if (!s_conversation_mode) return;
+#if HA_MIC_AVAILABLE
+  if (!s_dictation_fallback) { native_mic_start(); return; }
+#endif
+  if (s_conversation_resume_timer) app_timer_cancel(s_conversation_resume_timer);
+  s_conversation_resume_timer = app_timer_register(450, conversation_resume_callback, NULL);
+}
+static void conversation_disable(void) {
+  if (s_conversation_resume_timer) {
+    app_timer_cancel(s_conversation_resume_timer);
+    s_conversation_resume_timer = NULL;
+  }
+  s_conversation_audio_complete = false;
+  s_conversation_dictating = false;
+#if HA_MIC_AVAILABLE
+  if (s_conversation_mode && !s_dictation_fallback) native_mic_disable();
+#endif
+  s_conversation_mode = false;
+  s_dictation_fallback = false;
+}
+static void conversation_toggle(void) {
+  if (s_conversation_mode) {
+    conversation_disable();
+    set_ui_state(UI_STATE_IDLE);
+    set_status(NULL);
+    ha_haptic();
+    return;
+  }
+#ifdef PBL_SPEAKER
+  s_ignore_audio = true;
+  stop_audio();
+#endif
+#if HA_MIC_AVAILABLE
+  native_mic_toggle();
+#else
+  s_conversation_mode = true;
+  s_dictation_fallback = true;
+  conversation_resume_callback(NULL);
+  ha_haptic();
+#endif
+}
+
 // =========================================================================
 // SECTION 7: HARDWARE KEY BOARD REGISTRATION & INTERCEPT MAPPINGS
 // =========================================================================
@@ -445,9 +514,7 @@ static void select_short_click_handler(ClickRecognizerRef recognizer, void *cont
     stop_audio();                               
   }
   #endif
-  #if HA_MIC_AVAILABLE
-    if(s_conversation_mode) native_mic_disable();
-  #endif
+  if(s_conversation_mode) conversation_disable();
   set_status(NULL);
   if (!s_dictation_session) {
     set_status("Microphone unavailable");
@@ -461,23 +528,19 @@ static void select_short_click_handler(ClickRecognizerRef recognizer, void *cont
   }
 }
 
-#if HA_MIC_AVAILABLE
 static void select_long_click_handler(ClickRecognizerRef recognizer, void *context) {
-  native_mic_toggle();
+  conversation_toggle();
 }
-#endif
 
 // The Back button returns from results to the idle screen; at idle the
 // default Pebble Back action remains active and exits the application.
 static void exit_back_click_handler(ClickRecognizerRef recognizer, void *context) {
-#if HA_MIC_AVAILABLE
   if (s_conversation_mode) {
-    native_mic_disable();
+    conversation_disable();
     set_ui_state(UI_STATE_IDLE);
     set_status(NULL);
     return;
   }
-#endif
   if (s_current_state == UI_STATE_THINKING) {
 #if HA_MIC_AVAILABLE
     native_send_command("MIC_MODE_OFF");
@@ -493,9 +556,7 @@ static void results_back_click_handler(ClickRecognizerRef recognizer, void *cont
     s_ignore_audio = true;
     stop_audio();
   #endif
-#if HA_MIC_AVAILABLE
-  native_mic_disable();
-#endif
+  conversation_disable();
   set_status(NULL);
   set_ui_state(UI_STATE_IDLE);
 }
@@ -510,9 +571,7 @@ static void window_click_config_provider(void *context) {
     window_single_repeating_click_subscribe(BUTTON_ID_DOWN, 100, (ClickHandler) scroll_layer_scroll_down_click_handler);
     
     window_single_click_subscribe(BUTTON_ID_SELECT, select_short_click_handler);
-#if HA_MIC_AVAILABLE
-    window_long_click_subscribe(BUTTON_ID_SELECT, 500, select_long_click_handler, NULL);
-#endif 
+    window_long_click_subscribe(BUTTON_ID_SELECT, 500, select_long_click_handler, NULL); 
  
     
     #ifdef PBL_SPEAKER
@@ -522,9 +581,7 @@ static void window_click_config_provider(void *context) {
   } else {
     window_single_click_subscribe(BUTTON_ID_BACK, exit_back_click_handler);
     window_single_click_subscribe(BUTTON_ID_SELECT, select_short_click_handler);
-#if HA_MIC_AVAILABLE
-    window_long_click_subscribe(BUTTON_ID_SELECT, 500, select_long_click_handler, NULL);
-#endif 
+    window_long_click_subscribe(BUTTON_ID_SELECT, 500, select_long_click_handler, NULL); 
  
     
     #ifdef PBL_SPEAKER
@@ -551,13 +608,9 @@ static void set_ui_state(UIState state) {
       layer_set_hidden(scroll_layer_get_layer(s_scroll_layer), true);
       layer_set_hidden(s_arrow_layer, false);   
       layer_set_hidden(s_pinwheel_layer, true);  
-      #if HA_MIC_AVAILABLE
       text_layer_set_text(s_prompt_layer,
         s_conversation_mode ? "Conversation mode\nListening..." :
-                              "Press Select\nto record");
-      #else
-      text_layer_set_text(s_prompt_layer, "Press Select\nto record");
-      #endif 
+                              "Press Select\nto record"); 
       break;
     case UI_STATE_THINKING:                     
       layer_set_hidden(s_idle_layer, false);    
@@ -647,25 +700,21 @@ static void inbox_received_callback(DictionaryIterator *iterator, void *context)
   #endif
   
   else if(strcmp(command_tuple->value->cstring,"CONV_RESUME")==0) {
-    #if HA_MIC_AVAILABLE
-    if(s_conversation_mode)native_mic_start();
-    #endif
+    if(s_conversation_mode) conversation_schedule_resume();
   }
   else if(strcmp(command_tuple->value->cstring,"CONV_AUDIO_END")==0) {
     // The BLE sender completed; do not listen until speaker buffer drains.
-    #if HA_MIC_AVAILABLE
     if(s_conversation_mode) {
-      #ifdef PBL_SPEAKER
-      s_conversation_audio_complete=true;
-      if (!s_speaker_open && s_buffer_count == 0) {
-        s_conversation_audio_complete = false;
-        native_mic_start();
+#ifdef PBL_SPEAKER
+      if (s_ignore_audio || (!s_speaker_open && s_buffer_count == 0)) {
+        conversation_schedule_resume();
+      } else {
+        s_conversation_audio_complete = true;
       }
-      #else
-      native_mic_start();
-      #endif
+#else
+      conversation_schedule_resume();
+#endif
     }
-    #endif
   }
     else if (strcmp(command_tuple->value->cstring, "SETTINGS") == 0) {
       Tuple *font_tuple = dict_find(iterator, MESSAGE_KEY_FONT_SIZE);
@@ -736,6 +785,7 @@ static void inbox_received_callback(DictionaryIterator *iterator, void *context)
 }
 
 static void dictation_session_callback(DictationSession *session, DictationSessionStatus status, char *transcription, void *context) {
+  s_conversation_dictating = false;
   if (status == DictationSessionStatusSuccess && transcription && transcription[0]) {
     snprintf(s_thinking_transcript, sizeof(s_thinking_transcript),
              "You said:\n%.220s", transcription);
@@ -754,7 +804,9 @@ static void dictation_session_callback(DictationSession *session, DictationSessi
       ha_haptic();
       return;
     }
-    dict_write_cstring(iter, MESSAGE_KEY_COMMAND, "DICTATION"); 
+    dict_write_cstring(iter, MESSAGE_KEY_COMMAND,
+                       s_conversation_mode && s_dictation_fallback ?
+                       "CONV_DICTATION" : "DICTATION"); 
     dict_write_cstring(iter, MESSAGE_KEY_TEXT, transcription);  
     
     #ifdef PBL_SPEAKER
@@ -769,6 +821,7 @@ static void dictation_session_callback(DictationSession *session, DictationSessi
       ha_haptic();
     }
   } else {
+    if (s_conversation_mode && s_dictation_fallback) conversation_disable();
     set_ui_state(UI_STATE_IDLE);
     if (status != DictationSessionStatusFailureTranscriptionRejected) {
       const char *reason = "Speech recognition failed";
@@ -914,9 +967,7 @@ static void main_window_load(Window *window) {
 }
 
 static void main_window_unload(Window *window) {
-#if HA_MIC_AVAILABLE
-  native_mic_disable();
-#endif
+  conversation_disable();
   #ifdef PBL_SPEAKER
     stop_audio();                               
     if (s_volume_timer) app_timer_cancel(s_volume_timer); 
