@@ -4,7 +4,10 @@
 
 #include <pebble.h>
 // Native microphone-to-phone streaming requires SDK revision 110+.
-#define HA_ENABLE_NATIVE_MIC_STREAM 1
+// CloudPebble currently lacks MicStream API declarations. Uncomment this
+// ONLY when building with an SDK exposing mic_stream_to_phone_start(), or
+// pass -DHA_ENABLE_NATIVE_MIC_STREAM in the compatible SDK's C flags.
+// #define HA_ENABLE_NATIVE_MIC_STREAM 1
 
 #define MAX_TEXT_LENGTH 2048
 // Compile only with an SDK that exports mic_stream_to_phone_start().
