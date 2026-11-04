@@ -42,11 +42,16 @@ jobs:
           assert 'generativelanguage.googleapis.com' not in js
           assert 'texttospeech.googleapis.com' not in js
           assert pkg['pebble']['displayName'] == 'Home Assistant AI'
-          assert 'select_long_click_handler' not in c
+          assert 'select_long_click_handler' in c
+          assert 'conversation_toggle();' in c
+          assert 'CONV_DICTATION' in c and 'CONV_DICTATION' in js
+          assert 'conversation_resume_callback' in c
+          assert 'mic_stream_to_phone_start' in c
           assert 'window_single_click_subscribe(BUTTON_ID_BACK, results_back_click_handler)' in c
           assert 'set_ui_state(UI_STATE_IDLE);' in c
-          assert c.count('window_single_click_subscribe(BUTTON_ID_BACK') == 1
-          assert 'window_long_click_subscribe(BUTTON_ID_SELECT' not in c
+          assert 'window_single_click_subscribe(BUTTON_ID_BACK, exit_back_click_handler)' in c
+          assert c.count('window_single_click_subscribe(BUTTON_ID_BACK') == 2
+          assert c.count('window_long_click_subscribe(BUTTON_ID_SELECT') == 2
           assert '"Home\\nAssistant AI"' in c
           assert '"Vol +"' in c and '"Vol -"' in c
           assert 'Hold: conversation' not in c
@@ -68,7 +73,7 @@ jobs:
           assert 'failureCount>=5' in js
           assert pkg['pebble']['manifestVersion'] == 2
           assert 'Microphone' in pkg['pebble']['usesPermissions']
-          for cmd in ('MIC_START','MIC_AUDIO','MIC_END','MIC_CANCEL','CONV_RESUME','CONV_AUDIO_END'):
+          for cmd in ('MIC_MODE_ON','MIC_MODE_OFF','CONV_RESUME','CONV_AUDIO_END'):
               assert cmd in c and cmd in js
           print('Static regression checks passed')
           PY
