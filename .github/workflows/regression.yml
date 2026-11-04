@@ -48,6 +48,10 @@ jobs:
           assert 'conversation_toggle();' in c
           assert 'CONV_DICTATION' in c and 'CONV_DICTATION' in js
           assert 'conversation_resume_callback' in c
+          assert 'DictationSessionStatusFailureTranscriptionRejectedWithError' in c
+          assert 'dictation_session_stop(s_dictation_session)' in c
+          assert 'Conversation: dictation' in c
+          assert 'Conversation\\nDictation mode' in c
           assert 'mic_stream_to_phone_start' in c
           assert 'window_single_click_subscribe(BUTTON_ID_BACK, results_back_click_handler)' in c
           assert 'set_ui_state(UI_STATE_IDLE);' in c
