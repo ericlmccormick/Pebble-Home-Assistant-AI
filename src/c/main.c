@@ -255,7 +255,7 @@ static void update_text_layout() {
       speaker_stream_close();                   
       s_speaker_open = false;
       #if HA_MIC_AVAILABLE
-      if(s_conversation_audio_complete){s_conversation_audio_complete=false;ha_mic_restart();}
+      if(s_conversation_audio_complete){s_conversation_audio_complete=false;native_mic_start();}
       #endif
     }
   }
@@ -440,11 +440,7 @@ static void select_short_click_handler(ClickRecognizerRef recognizer, void *cont
   }
   #endif
   #if HA_MIC_AVAILABLE
-    if(s_conversation_mode) {
-      ha_mic_halt();s_mic_count=0;s_mic_end_pending=false;
-      s_mic_start_pending=false;s_mic_cancel_pending=true;
-      ha_mic_flush();s_conversation_mode=false;s_mic_waiting=true;
-    }
+    if(s_conversation_mode) native_mic_disable();
   #endif
   set_status(NULL);
   if (!s_dictation_session) {
@@ -459,11 +455,30 @@ static void select_short_click_handler(ClickRecognizerRef recognizer, void *cont
   }
 }
 
+#if HA_MIC_AVAILABLE
+static void select_long_click_handler(ClickRecognizerRef recognizer, void *context) {
+  native_mic_toggle();
+}
+#endif
+
 // The Back button returns from results to the idle screen; at idle the
 // default Pebble Back action remains active and exits the application.
 static void exit_back_click_handler(ClickRecognizerRef recognizer, void *context) {
-  // Explicitly pop our only application window. Switching the click config
-  // provider at runtime may not restore the SDK's implicit Back handler.
+#if HA_MIC_AVAILABLE
+  if (s_conversation_mode) {
+    native_mic_disable();
+    set_ui_state(UI_STATE_IDLE);
+    set_status(NULL);
+    return;
+  }
+#endif
+  if (s_current_state == UI_STATE_THINKING) {
+#if HA_MIC_AVAILABLE
+    native_send_command("MIC_MODE_OFF");
+#endif
+    set_ui_state(UI_STATE_IDLE);
+    return;
+  }
   window_stack_pop(true);
 }
 
@@ -472,6 +487,9 @@ static void results_back_click_handler(ClickRecognizerRef recognizer, void *cont
     s_ignore_audio = true;
     stop_audio();
   #endif
+#if HA_MIC_AVAILABLE
+  native_mic_disable();
+#endif
   set_status(NULL);
   set_ui_state(UI_STATE_IDLE);
 }
@@ -485,7 +503,10 @@ static void window_click_config_provider(void *context) {
     window_single_repeating_click_subscribe(BUTTON_ID_UP, 100, (ClickHandler) scroll_layer_scroll_up_click_handler);
     window_single_repeating_click_subscribe(BUTTON_ID_DOWN, 100, (ClickHandler) scroll_layer_scroll_down_click_handler);
     
-    window_single_click_subscribe(BUTTON_ID_SELECT, select_short_click_handler); 
+    window_single_click_subscribe(BUTTON_ID_SELECT, select_short_click_handler);
+#if HA_MIC_AVAILABLE
+    window_long_click_subscribe(BUTTON_ID_SELECT, 500, select_long_click_handler, NULL);
+#endif 
  
     
     #ifdef PBL_SPEAKER
@@ -494,7 +515,10 @@ static void window_click_config_provider(void *context) {
     #endif
   } else {
     window_single_click_subscribe(BUTTON_ID_BACK, exit_back_click_handler);
-    window_single_click_subscribe(BUTTON_ID_SELECT, select_short_click_handler); 
+    window_single_click_subscribe(BUTTON_ID_SELECT, select_short_click_handler);
+#if HA_MIC_AVAILABLE
+    window_long_click_subscribe(BUTTON_ID_SELECT, 500, select_long_click_handler, NULL);
+#endif 
  
     
     #ifdef PBL_SPEAKER
@@ -523,10 +547,8 @@ static void set_ui_state(UIState state) {
       layer_set_hidden(s_pinwheel_layer, true);  
       #if HA_MIC_AVAILABLE
       text_layer_set_text(s_prompt_layer,
-        s_conversation_mode ?
-          (s_mic_capturing ? "Conversation mode\nListening..." :
-                             "Conversation mode\nMicrophone unavailable") :
-          "Press Select\nto record");
+        s_conversation_mode ? "Conversation mode\nListening..." :
+                              "Press Select\nto record");
       #else
       text_layer_set_text(s_prompt_layer, "Press Select\nto record");
       #endif 
@@ -566,7 +588,7 @@ static void inbox_received_callback(DictionaryIterator *iterator, void *context)
 
   if (strncmp(command_tuple->value->cstring, "TEXT_RESPONSE", 13) == 0) {
     #if HA_MIC_AVAILABLE
-      if(s_conversation_mode)ha_mic_halt();
+      if(s_conversation_mode) {s_native_waiting=true;native_mic_stop();}
     #endif 
     #ifdef PBL_SPEAKER
     bool no_audio = false;
@@ -620,7 +642,7 @@ static void inbox_received_callback(DictionaryIterator *iterator, void *context)
   
   else if(strcmp(command_tuple->value->cstring,"CONV_RESUME")==0) {
     #if HA_MIC_AVAILABLE
-    if(s_conversation_mode)ha_mic_restart();
+    if(s_conversation_mode)native_mic_start();
     #endif
   }
   else if(strcmp(command_tuple->value->cstring,"CONV_AUDIO_END")==0) {
@@ -629,8 +651,12 @@ static void inbox_received_callback(DictionaryIterator *iterator, void *context)
     if(s_conversation_mode) {
       #ifdef PBL_SPEAKER
       s_conversation_audio_complete=true;
+      if (!s_speaker_open && s_buffer_count == 0) {
+        s_conversation_audio_complete = false;
+        native_mic_start();
+      }
       #else
-      ha_mic_restart();
+      native_mic_start();
       #endif
     }
     #endif
@@ -664,6 +690,24 @@ static void inbox_received_callback(DictionaryIterator *iterator, void *context)
         if (s_haptic_level > 3) s_haptic_level = 3;
       }
       ha_haptic();
+    }
+    else if (strcmp(command_tuple->value->cstring, "MIC_TURN_END") == 0) {
+#if HA_MIC_AVAILABLE
+      if (s_conversation_mode) {
+        s_native_waiting = true;
+        native_mic_stop();
+        set_ui_state(UI_STATE_THINKING);
+        set_status("Processing speech...");
+      }
+#endif
+    }
+    else if (strcmp(command_tuple->value->cstring, "CONV_TRANSCRIPT") == 0) {
+      Tuple *utterance = dict_find(iterator, MESSAGE_KEY_TEXT);
+      if (utterance && s_thinking_transcript_layer) {
+        snprintf(s_thinking_transcript, sizeof(s_thinking_transcript),
+                 "You said:\n%.220s", utterance->value->cstring);
+        text_layer_set_text(s_thinking_transcript_layer, s_thinking_transcript);
+      }
     }
     else if (strcmp(command_tuple->value->cstring, "UPDATE_FONT") == 0) { 
     Tuple *font_tuple = dict_find(iterator, MESSAGE_KEY_FONT_SIZE); 
@@ -858,7 +902,7 @@ static void main_window_load(Window *window) {
 
 static void main_window_unload(Window *window) {
 #if HA_MIC_AVAILABLE
-  s_conversation_mode=false;ha_mic_halt();
+  native_mic_disable();
 #endif
   #ifdef PBL_SPEAKER
     stop_audio();                               
@@ -898,8 +942,7 @@ static void init() {
   
   app_message_register_inbox_received(inbox_received_callback);
 #if HA_MIC_AVAILABLE
-  app_message_register_outbox_sent(ha_mic_tx_sent);
-  app_message_register_outbox_failed(ha_mic_tx_failed);
+  // Microphone audio is handled natively by PebbleOS; no AppMessage PCM.
 #endif 
   app_message_open(12000, 1024);                
   
