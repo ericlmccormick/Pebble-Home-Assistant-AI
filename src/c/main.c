@@ -3,13 +3,12 @@
 // =========================================================================
 
 #include <pebble.h>
-// Uncomment ONLY with PebbleOS SDK revision >=111 and matching firmware:
-// #define HA_ENABLE_RAW_MIC 1 
+// Native microphone-to-phone streaming requires SDK revision 110+.
+#define HA_ENABLE_NATIVE_MIC_STREAM 1
 
 #define MAX_TEXT_LENGTH 2048
-// Compile with -DHA_ENABLE_RAW_MIC only against PebbleOS SDK revision >=111
-// and matching firmware. The CloudPebble 4.33.1 SDK lacks these exports.
-#if defined(HA_ENABLE_RAW_MIC) && defined(PBL_MICROPHONE) && !defined(PBL_SDK_FROZEN)
+// Compile only with an SDK that exports mic_stream_to_phone_start().
+#if defined(HA_ENABLE_NATIVE_MIC_STREAM) && defined(PBL_PLATFORM_EMERY) && defined(PBL_MICROPHONE) && !defined(PBL_SDK_FROZEN)
 #define HA_MIC_AVAILABLE 1
 #else
 #define HA_MIC_AVAILABLE 0
@@ -110,7 +109,8 @@ static char s_ha_text[MAX_TEXT_LENGTH];
 static void set_ui_state(UIState state);       
 static void window_click_config_provider(void *context);
 #if HA_MIC_AVAILABLE
-static void ha_mic_restart(void);
+static void native_mic_start(void);
+static void native_mic_disable(void);
 #endif 
 #ifdef PBL_SPEAKER
   static void up_volume_handler(ClickRecognizerRef recognizer, void *context);   
@@ -352,170 +352,79 @@ static void update_text_layout() {
 
 
 #if HA_MIC_AVAILABLE
-// Raw microphone: 16 kHz, signed mono, 320 samples per 20-ms callback.
-// Each frame is independently encoded as 4-bit IMA ADPCM for BLE transport.
-// Avoid allocating memory or blocking in capture callbacks.
-#define HA_SAMPLES_PER_FRAME 320
-#define HA_FRAME_BYTES 160
-#define HA_QUEUE_FRAMES 48
-#define HA_PREROLL_FRAMES 10
-#define HA_SILENCE_FRAMES 65
-#define HA_MAX_FRAMES 1100
-static uint8_t s_mic_queue[HA_QUEUE_FRAMES][HA_FRAME_BYTES];
-static uint16_t s_mic_head = 0, s_mic_tail = 0, s_mic_count = 0;
-static uint8_t s_preroll[HA_PREROLL_FRAMES][HA_FRAME_BYTES];
-static uint8_t s_preroll_len=0, s_preroll_at=0;
-static bool s_mic_capturing=false, s_mic_sending=false, s_mic_end_pending=false;
-static bool s_mic_utterance=false, s_mic_waiting=false, s_mic_start_pending=false;
-static bool s_mic_cancel_pending=false, s_mic_tx_busy=false, s_mic_overflow=false;
-static uint32_t s_mic_seq=0;
-static unsigned s_mic_silence=0, s_mic_frames=0, s_mic_speech_frames=0;
-static int32_t s_mic_valpred=0, s_mic_index=0;
-static const int16_t s_mic_steps[89]={
-7,8,9,10,11,12,13,14,16,17,19,21,23,25,28,31,
-34,37,41,45,50,55,60,66,73,80,88,97,107,118,130,143,157,173,
-190,209,230,253,279,307,337,371,408,449,494,544,598,658,724,
-796,876,963,1060,1166,1282,1411,1552,1707,1878,2066,2272,
-2499,2749,3024,3327,3660,4026,4428,4871,5358,5894,6484,7132,
-7845,8630,9493,10442,11487,12635,13899,15289,16818,18500,20350,
-22385,24623,27086,29794,32767};
-static const int8_t s_mic_indices[16]={-1,-1,-1,-1,2,4,6,8,-1,-1,-1,-1,2,4,6,8};
-static void ha_mic_flush(void);
-static void ha_mic_restart(void);
-
-static void ha_mic_encode(const int16_t *samples,size_t count,uint8_t *out) {
-  int32_t pred=0, idx=0;
-  for(size_t i=0;i<HA_SAMPLES_PER_FRAME;i++) {
-    int32_t sample=(i<count)?samples[i]:0;
-    int32_t diff=sample-pred;
-    uint8_t sign=diff<0?8:0;
-    if(diff<0)diff=-diff;
-    int32_t step=s_mic_steps[idx], vpdiff=step>>3;
-    uint8_t d=0;
-    if(diff>=step){d|=4;diff-=step;vpdiff+=step;}
-    if(diff>=step/2){d|=2;diff-=step/2;vpdiff+=step/2;}
-    if(diff>=step/4){d|=1;vpdiff+=step/4;}
-    pred += sign?-vpdiff:vpdiff;
-    if(pred>32767)pred=32767;
-    if(pred< -32768)pred=-32768;
-    d|=sign;
-    idx+=s_mic_indices[d];if(idx<0)idx=0;if(idx>88)idx=88;
-    if(!(i&1))out[i/2]=(uint8_t)(d<<4);
-    else out[i/2]|=d;
+// SDK 110+ handles Speex compression and Bluetooth microphone transfer.
+// The phone delivers decoded PCM16 via audiostream events.
+static bool s_native_streaming = false;
+static bool s_native_waiting = false;
+static void native_send_command(const char *command) {
+  DictionaryIterator *iter = NULL;
+  if (app_message_outbox_begin(&iter) != APP_MSG_OK || !iter) return;
+  dict_write_cstring(iter, MESSAGE_KEY_COMMAND, command);
+  app_message_outbox_send();
+}
+static void native_mic_stop(void) {
+  if (s_native_streaming || mic_stream_to_phone_is_active()) {
+    s_native_streaming = false;
+    mic_stream_to_phone_stop();
   }
 }
-static void ha_mic_enqueue(const uint8_t *frame) {
-  if(s_mic_count==HA_QUEUE_FRAMES) {s_mic_overflow=true;return;}
-  memcpy(s_mic_queue[s_mic_tail],frame,HA_FRAME_BYTES);
-  s_mic_tail=(s_mic_tail+1)%HA_QUEUE_FRAMES;
-  s_mic_count++;
+static void native_mic_started(void *context) {
+  if (s_conversation_mode && !s_native_waiting) set_status("Listening...");
 }
-static void ha_mic_halt(void) {
-  if(s_mic_capturing){s_mic_capturing=false;mic_capture_stop();}
+static void native_mic_stopped(MicStreamStopReason reason, void *context) {
+  s_native_streaming = false;
+  if (s_conversation_mode && !s_native_waiting) {
+    s_native_waiting = true;
+    s_conversation_mode = false;
+    native_send_command("MIC_MODE_OFF");
+    set_ui_state(UI_STATE_IDLE);
+    set_status("Mic stream interrupted");
+  }
 }
-static void ha_mic_finish(void) {
-  ha_mic_halt();
-  s_mic_end_pending=true;
-  s_mic_waiting=true;
-  set_status("Processing...");
-  ha_mic_flush();
+static void native_mic_start(void) {
+  if (!s_conversation_mode || s_native_streaming) return;
+  s_native_waiting = false;
+  set_ui_state(UI_STATE_IDLE);
+  MicStreamStartResult result = mic_stream_to_phone_start((MicStreamHandlers){
+    .started = native_mic_started, .stopped = native_mic_stopped
+  }, NULL);
+  s_native_streaming = result == MicStreamStartOk;
+  if (!s_native_streaming) {
+    s_conversation_mode = false; s_native_waiting = true;
+    native_send_command("MIC_MODE_OFF");
+    set_ui_state(UI_STATE_IDLE);
+    set_status(result == MicStreamStartErrBusy ? "Microphone busy" :
+               result == MicStreamStartErrUnavailable ? "Microphone unavailable" :
+               result == MicStreamStartErrNotForeground ? "App not foreground" :
+               "Mic denied or unavailable");
+    ha_haptic();
+  } else set_status("Listening...");
 }
-static void ha_mic_data(const int16_t *samples,size_t count,void *ctx) {
-  if(!s_conversation_mode || !s_mic_capturing || s_mic_waiting) return;
-  uint64_t energy=0;
-  for(size_t i=0;i<count;i++){int32_t v=samples[i];energy+=(uint64_t)(v*v);}
-  bool active=count>0 && (energy/count)>360000; // RMS >600/32768
-  uint8_t frame[HA_FRAME_BYTES];
-  ha_mic_encode(samples,count,frame);
-  if(!s_mic_utterance) {
-    memcpy(s_preroll[s_preroll_at],frame,HA_FRAME_BYTES);
-    s_preroll_at=(s_preroll_at+1)%HA_PREROLL_FRAMES;
-    if(s_preroll_len<HA_PREROLL_FRAMES)s_preroll_len++;
-    if(active)s_mic_speech_frames++; else s_mic_speech_frames=0;
-    if(s_mic_speech_frames>=3) {
-      s_mic_utterance=true;s_mic_start_pending=true;s_mic_seq=0;
-      s_mic_silence=0;s_mic_frames=0;
-      for(uint8_t i=0;i<s_preroll_len;i++){
-        uint8_t pos=(s_preroll_at+HA_PREROLL_FRAMES-s_preroll_len+i)%HA_PREROLL_FRAMES;
-        ha_mic_enqueue(s_preroll[pos]);
-      }
-      s_preroll_len=0;
-      ha_mic_flush();
-    }
+static void native_mic_disable(void) {
+  if (!s_conversation_mode) return;
+  s_conversation_mode = false; s_native_waiting = true;
+  native_mic_stop();
+  native_send_command("MIC_MODE_OFF");
+#ifdef PBL_SPEAKER
+  s_conversation_audio_complete = false;
+#endif
+}
+static void native_mic_toggle(void) {
+  if (s_conversation_mode) {
+    native_mic_disable();
+    set_ui_state(UI_STATE_IDLE);
+    set_status(NULL);
+    ha_haptic();
     return;
   }
-  ha_mic_enqueue(frame);
-  s_mic_frames++;
-  if(active)s_mic_silence=0;else s_mic_silence++;
-  if(s_mic_overflow || s_mic_silence>=HA_SILENCE_FRAMES || s_mic_frames>=HA_MAX_FRAMES)
-    ha_mic_finish();
-  else ha_mic_flush();
-}
-static void ha_mic_stopped(MicCaptureStopReason reason,void *context) {
-  s_mic_capturing=false;
-  if(s_conversation_mode && !s_mic_waiting) {
-    s_mic_waiting=true;
-    s_mic_cancel_pending=true;
-    ha_mic_flush();
-    set_status("Microphone stopped");
-  }
-}
-static void ha_mic_flush(void) {
-  if(s_mic_tx_busy || (!s_conversation_mode && !s_mic_cancel_pending)) return;
-  const char *cmd=NULL;
-  if(s_mic_cancel_pending)cmd="MIC_CANCEL";
-  else if(s_mic_start_pending)cmd="MIC_START";
-  else if(s_mic_count>=2 || (s_mic_count>0 && s_mic_end_pending))
-    cmd="MIC_AUDIO";
-  else if(s_mic_end_pending)cmd=s_mic_overflow?"MIC_CANCEL":"MIC_END";
-  if(!cmd)return;
-  DictionaryIterator *iter=NULL;
-  if(app_message_outbox_begin(&iter)!=APP_MSG_OK || !iter)return;
-  dict_write_cstring(iter,MESSAGE_KEY_COMMAND,cmd);
-  uint8_t frame_count=0;
-  if(strcmp(cmd,"MIC_AUDIO")==0) {
-    uint8_t packet[HA_FRAME_BYTES*2];
-    frame_count=s_mic_count>=2?2:1;
-    for(uint8_t i=0;i<frame_count;i++) {
-      uint16_t pos=(s_mic_head+i)%HA_QUEUE_FRAMES;
-      memcpy(packet+i*HA_FRAME_BYTES,s_mic_queue[pos],HA_FRAME_BYTES);
-    }
-    dict_write_data(iter,MESSAGE_KEY_CHUNK,packet,HA_FRAME_BYTES*frame_count);
-    dict_write_int32(iter,MESSAGE_KEY_VOLUME,(int32_t)s_mic_seq);
-  }
-  AppMessageResult result=app_message_outbox_send();
-  if(result!=APP_MSG_OK)return;
-  s_mic_tx_busy=true;
-  if(s_mic_cancel_pending){s_mic_cancel_pending=false;s_mic_count=0;}
-  else if(s_mic_start_pending)s_mic_start_pending=false;
-  else if(frame_count) {
-    s_mic_head=(s_mic_head+frame_count)%HA_QUEUE_FRAMES;
-    s_mic_count-=frame_count;s_mic_seq+=frame_count;
-  } else if(s_mic_end_pending)s_mic_end_pending=false;
-}
-static void ha_mic_tx_sent(DictionaryIterator *iter,void *context) {
-  s_mic_tx_busy=false;ha_mic_flush();
-}
-static void ha_mic_tx_failed(DictionaryIterator *iter,AppMessageResult reason,void *context) {
-  s_mic_tx_busy=false;
-  s_mic_overflow=true;s_mic_end_pending=false;s_mic_count=0;
-  s_mic_cancel_pending=true;
-  ha_mic_halt();
-  ha_mic_flush();
-  set_status("Mic link lost");
-}
-static void ha_mic_restart(void) {
-  if(!s_conversation_mode || s_mic_capturing)return;
-  s_mic_waiting=false;s_mic_utterance=false;s_mic_overflow=false;
-  s_mic_end_pending=false;s_mic_start_pending=false;s_mic_cancel_pending=false;
-  s_mic_head=s_mic_tail=s_mic_count=0;s_preroll_len=s_preroll_at=0;
-  s_mic_silence=s_mic_frames=s_mic_speech_frames=0;
-  MicCaptureStartResult result=mic_capture_start((MicCaptureHandlers){
-    .data=ha_mic_data,.stopped=ha_mic_stopped
-  },NULL);
-  s_mic_capturing=(result==0); // MicCaptureStartOK value 0.
-  if(s_mic_capturing) set_status("Listening...");
-  else {s_mic_waiting=true;set_status("Mic unavailable");}
+#ifdef PBL_SPEAKER
+  s_ignore_audio = true;
+  stop_audio();
+#endif
+  s_conversation_mode = true; s_native_waiting = false;
+  native_send_command("MIC_MODE_ON");
+  native_mic_start();
+  ha_haptic();
 }
 #endif
 
