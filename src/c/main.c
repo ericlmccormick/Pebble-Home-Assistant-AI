@@ -746,6 +746,11 @@ static void inbox_received_callback(DictionaryIterator *iterator, void *context)
       }
       ha_haptic();
     }
+    else if (strcmp(command_tuple->value->cstring, "CONV_MODE_STOP") == 0) {
+      conversation_disable();
+      set_ui_state(UI_STATE_IDLE);
+      set_status("Conversation stopped");
+    }
     else if (strcmp(command_tuple->value->cstring, "MIC_MODE_OFF") == 0) {
 #if HA_MIC_AVAILABLE
       native_mic_disable();
@@ -799,6 +804,7 @@ static void dictation_session_callback(DictationSession *session, DictationSessi
     DictionaryIterator *iter = NULL;
     AppMessageResult outbox_result = app_message_outbox_begin(&iter);
     if (outbox_result != APP_MSG_OK || !iter) {
+      if (s_conversation_mode) conversation_disable();
       set_ui_state(UI_STATE_IDLE);
       set_status("Phone message queue busy");
       ha_haptic();
@@ -816,6 +822,7 @@ static void dictation_session_callback(DictationSession *session, DictationSessi
     #endif
     
     if (app_message_outbox_send() != APP_MSG_OK) {
+      if (s_conversation_mode) conversation_disable();
       set_ui_state(UI_STATE_IDLE);
       set_status("Could not send to phone");
       ha_haptic();
