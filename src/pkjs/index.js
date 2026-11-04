@@ -331,6 +331,7 @@ var conversationSocket=null, conversationGeneration=0, conversationId=1001;
 var conversationHandler=-1, conversationAudioQueue=[], conversationEnd=false;
 var conversationAccepted=false, conversationReceivedText=false;
 var conversationAudioFinalPending=false, conversationTimeout=null, conversationStage='';
+var legacyConversationTurn=false;
 var conversationFlushTimer=null;
 var conversationPipeline=haPipeline;
 
@@ -618,14 +619,19 @@ Pebble.addEventListener('appmessage',function(e) {
   if(d.COMMAND==='MIC_MODE_OFF'){
     nativeCancel();return;
   }
-  if (d.COMMAND !== 'DICTATION') return;
-  if (!haUrl || !haToken) { errText('Set Home Assistant URL and token in settings.'); return; }
-  if (!d.TEXT) {errText('No dictation captured.'); return;}
+  if (d.COMMAND !== 'DICTATION' && d.COMMAND !== 'CONV_DICTATION') return;
+  var legacyTurn=d.COMMAND==='CONV_DICTATION';
+  if (!haUrl || !haToken || !d.TEXT) {
+    errText(!haUrl || !haToken ? 'Set Home Assistant URL and token.' : 'No dictation captured.');
+    if(legacyTurn)Pebble.sendAppMessage({COMMAND:'CONV_MODE_STOP'});
+    return;
+  }
   var skipAudio=textOnly || !hasSpeaker || !enableTts || !haTts || d.VOLUME === 0;
-  askHomeAssistant(d.TEXT,skipAudio);
+  askHomeAssistant(d.TEXT,skipAudio,legacyTurn);
 });
-function askHomeAssistant(prompt,skipAudio) {
+function askHomeAssistant(prompt,skipAudio,legacyTurn) {
   var generation=++requestGeneration;
+  legacyConversationTurn=!!legacyTurn;
   sentenceQueue=[]; readyAudioQueue=[]; isFetchingTTS=false; isSendingBLE=false;
   js_adpcm_valpred=0; js_adpcm_index=0;
   var request={text:prompt,language:'en'};
@@ -637,6 +643,7 @@ function askHomeAssistant(prompt,skipAudio) {
     var message=speech && speech.speech;
     if(typeof message!=='string' || !message.trim()) {
       errText('No spoken response from Home Assistant.');
+      if(legacyTurn)Pebble.sendAppMessage({COMMAND:'CONV_MODE_STOP'});
       return;
     }
     if(data.conversation_id) {
@@ -647,14 +654,24 @@ function askHomeAssistant(prompt,skipAudio) {
     Pebble.sendAppMessage({
       COMMAND:skipAudio?'TEXT_RESPONSE_NO_AUDIO':'TEXT_RESPONSE_8_16',
       TEXT:message.substring(0,1900)
+    },function(){
+      if(generation!==requestGeneration)return;
+      if(skipAudio) {
+        if(legacyTurn)Pebble.sendAppMessage({COMMAND:'CONV_RESUME'});
+      } else {
+        if(legacyTurn)conversationAudioFinalPending=true;
+        sentenceQueue=(message.match(/[^.!?]+[.!?]*/g)||[message])
+          .map(function(s){return s.trim();}).filter(function(s){return s.length>0;});
+        startTTSFetchLoop(generation);
+      }
+    },function(){
+      if(legacyTurn)Pebble.sendAppMessage({COMMAND:'CONV_MODE_STOP'});
     });
-    if(!skipAudio) {
-      sentenceQueue=(message.match(/[^.!?]+[.!?]*/g)||[message])
-        .map(function(s){return s.trim();}).filter(function(s){return s.length>0;});
-      startTTSFetchLoop(generation);
-    }
   }).catch(function(err) {
-    if(generation===requestGeneration) errText('HA: '+(err.message||err));
+    if(generation===requestGeneration) {
+      errText('HA: '+(err.message||err));
+      if(legacyTurn)Pebble.sendAppMessage({COMMAND:'CONV_MODE_STOP'});
+    }
   });
 }
 function encodeADPCM(pcm16) {
