@@ -552,6 +552,12 @@ static void select_short_click_handler(ClickRecognizerRef recognizer, void *cont
 
 // The Back button returns from results to the idle screen; at idle the
 // default Pebble Back action remains active and exits the application.
+static void exit_back_click_handler(ClickRecognizerRef recognizer, void *context) {
+  // Explicitly pop our only application window. Switching the click config
+  // provider at runtime may not restore the SDK's implicit Back handler.
+  window_stack_pop(true);
+}
+
 static void results_back_click_handler(ClickRecognizerRef recognizer, void *context) {
   #ifdef PBL_SPEAKER
     s_ignore_audio = true;
@@ -578,6 +584,7 @@ static void window_click_config_provider(void *context) {
       window_long_click_subscribe(BUTTON_ID_DOWN, 500, down_volume_handler, NULL);
     #endif
   } else {
+    window_single_click_subscribe(BUTTON_ID_BACK, exit_back_click_handler);
     window_single_click_subscribe(BUTTON_ID_SELECT, select_short_click_handler); 
  
     
