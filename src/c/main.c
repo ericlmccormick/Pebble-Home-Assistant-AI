@@ -3,11 +3,11 @@
 // =========================================================================
 
 #include <pebble.h>
-// Native microphone-to-phone streaming requires SDK revision 110+.
-// CloudPebble currently lacks MicStream API declarations. Uncomment this
-// ONLY when building with an SDK exposing mic_stream_to_phone_start(), or
-// pass -DHA_ENABLE_NATIVE_MIC_STREAM in the compatible SDK's C flags.
-// #define HA_ENABLE_NATIVE_MIC_STREAM 1
+// True continuous conversation requires Pebble SDK revision 110+.
+// This branch intentionally targets the native MicStream API rather than
+// pretending system dictation can provide an always-open microphone.
+// Do not build this branch with CloudPebble's older SDK.
+#define HA_ENABLE_NATIVE_MIC_STREAM 1
 
 #define MAX_TEXT_LENGTH 2048
 // Compile only with an SDK that exports mic_stream_to_phone_start().
@@ -506,9 +506,8 @@ static void conversation_toggle(void) {
 #if HA_MIC_AVAILABLE
   native_mic_toggle();
 #else
-  s_conversation_mode = true;
-  s_dictation_fallback = true;
-  conversation_resume_callback(NULL);
+  // Other platforms retain one-shot dictation rather than claim hands-free.
+  set_status("Continuous microphone unavailable");
   ha_haptic();
 #endif
 }
