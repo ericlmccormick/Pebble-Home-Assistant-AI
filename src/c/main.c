@@ -384,6 +384,9 @@ static void native_mic_stopped(MicStreamStopReason reason, void *context) {
 static void native_mic_start(void) {
   if (!s_conversation_mode || s_native_streaming) return;
   s_native_waiting = false;
+  s_thinking_transcript[0] = 0;
+  if (s_thinking_transcript_layer)
+    text_layer_set_text(s_thinking_transcript_layer, s_thinking_transcript);
   set_ui_state(UI_STATE_IDLE);
   MicStreamStartResult result = mic_stream_to_phone_start((MicStreamHandlers){
     .started = native_mic_started, .stopped = native_mic_stopped
@@ -690,6 +693,13 @@ static void inbox_received_callback(DictionaryIterator *iterator, void *context)
         if (s_haptic_level > 3) s_haptic_level = 3;
       }
       ha_haptic();
+    }
+    else if (strcmp(command_tuple->value->cstring, "MIC_MODE_OFF") == 0) {
+#if HA_MIC_AVAILABLE
+      native_mic_disable();
+      set_ui_state(UI_STATE_IDLE);
+      set_status("Microphone stream ended");
+#endif
     }
     else if (strcmp(command_tuple->value->cstring, "MIC_TURN_END") == 0) {
 #if HA_MIC_AVAILABLE
