@@ -323,13 +323,13 @@ function haJson(path,payload) {
   return attempt(0);
 }
 // ------------------------------------------------------------------------
-// Optional hands-free path (requires PebbleOS SDK >=111 + Microphone permission)
-// PCM samples arrive as independent 20ms IMA-ADPCM watch frames.
-// The phone restores PCM16 and streams it into the selected HA Assist pipeline.
+// SDK 110+ native microphone streaming. The Pebble phone app decodes Speex
+// into PCM16LE and emits audiostreamstart/audiostream/audiostreamstop.
+// Phone-side voice activity detection gates the Home Assistant Assist pipeline.
 // ------------------------------------------------------------------------
 var conversationSocket=null, conversationGeneration=0, conversationId=1001;
 var conversationHandler=-1, conversationAudioQueue=[], conversationEnd=false;
-var conversationAccepted=false, conversationReceivedText=false, conversationLastSequence=-1;
+var conversationAccepted=false, conversationReceivedText=false;
 var conversationAudioFinalPending=false, conversationTimeout=null, conversationStage='';
 var conversationFlushTimer=null;
 var conversationPipeline=haPipeline;
@@ -352,28 +352,6 @@ function conversationFailure(message, generation) {
   sentenceQueue=[];readyAudioQueue=[];conversationAudioFinalPending=false;
   Pebble.sendAppMessage({COMMAND:'TEXT_RESPONSE_NO_AUDIO',TEXT:String(message).substring(0,180)},
     function(){Pebble.sendAppMessage({COMMAND:'CONV_RESUME'});});
-}
-function decodeMicFrame(data) {
-  var bytes=data instanceof Uint8Array?data:new Uint8Array(data);
-  if(bytes.length!==160)throw Error('Mic frame length mismatch');
-  // Watch resets its IMA predictor per 320-sample frame.
-  var steps=stepTable,indices=indexTable,pred=0,idx=0;
-  var out=new Uint8Array(640),cursor=0;
-  for(var i=0;i<160;i++) {
-    for(var j=0;j<2;j++) {
-      var d=j?(bytes[i]&15):(bytes[i]>>4),step=steps[idx];
-      var delta=step>>3;
-      if(d&4)delta+=step;
-      if(d&2)delta+=step>>1;
-      if(d&1)delta+=step>>2;
-      pred+=(d&8)?-delta:delta;
-      if(pred>32767)pred=32767;
-      if(pred< -32768)pred=-32768;
-      idx+=indices[d];if(idx<0)idx=0;if(idx>88)idx=88;
-      out[cursor++]=pred&255;out[cursor++]=(pred>>8)&255;
-    }
-  }
-  return out;
 }
 function conversationFlushAudio() {
   if(!conversationSocket || !conversationAccepted || conversationHandler<0)return;
@@ -404,7 +382,7 @@ function conversationStart() {
     return;
   }
   conversationStopSocket();
-  conversationReceivedText=false;conversationLastSequence=-1;
+  conversationReceivedText=false;
   var gen=++conversationGeneration; ++requestGeneration;
   sentenceQueue=[];readyAudioQueue=[];
   isFetchingTTS=false;isSendingBLE=false;
@@ -450,6 +428,10 @@ function conversationStart() {
         conversationFlushAudio();
       } else if(ev.type==='stt-end') {
         conversationStage='intent';
+        var recognized=data.stt_output && data.stt_output.text;
+        if(recognized) Pebble.sendAppMessage({
+          COMMAND:'CONV_TRANSCRIPT',TEXT:String(recognized).substring(0,220)
+        });
       } else if(ev.type==='intent-end') {
         conversationReceivedText=true;
         if(conversationTimeout){clearTimeout(conversationTimeout);conversationTimeout=null;}
@@ -474,25 +456,130 @@ function conversationStart() {
     }
   };
 }
-function conversationAudioFrame(data,seq) {
-  if(!conversationSocket || conversationReceivedText)return;
-  var bytes=data instanceof Uint8Array?data:new Uint8Array(data);
-  if(bytes.length!==160 && bytes.length!==320) {
-    conversationFailure('Unexpected microphone packet size',conversationGeneration);return;
-  }
-  var count=bytes.length/160;
-  if(seq!==conversationLastSequence+1) {
-    conversationFailure('Mic audio packet loss',conversationGeneration);return;
-  }
-  conversationLastSequence=seq+count-1;
-  try {
-    for(var i=0;i<count;i++)
-      conversationAudioQueue.push(decodeMicFrame(bytes.subarray(i*160,(i+1)*160)));
-    if(conversationAudioQueue.length>120)
-      throw Error('Mic audio queue overflow');
-    conversationFlushAudio();
-  }catch(e){conversationFailure(e.message,conversationGeneration);}
+// A small pre-roll prevents clipping the first syllable of a sentence.
+// Do not send continuous room audio to Home Assistant while waiting for speech.
+var nativeMicMode=false, nativeMicActive=false, nativeMicWaiting=false;
+var nativeSpeechStarted=false, nativePreRoll=[], nativePreRollBytes=0;
+var nativeVoicedMs=0, nativeSilenceMs=0, nativeTotalMs=0;
+var nativeStopTimer=null;
+var NATIVE_PCM_BYTES_PER_SECOND=32000;
+function nativeResetTurn() {
+  nativeMicActive=false;
+  nativeMicWaiting=false;
+  nativeSpeechStarted=false;
+  nativePreRoll=[];nativePreRollBytes=0;
+  nativeVoicedMs=0;nativeSilenceMs=0;nativeTotalMs=0;
+  if(nativeStopTimer){clearTimeout(nativeStopTimer);nativeStopTimer=null;}
 }
+function nativeCancel() {
+  nativeMicMode=false;
+  nativeResetTurn();
+  ++conversationGeneration;
+  ++requestGeneration;
+  conversationStopSocket();
+  sentenceQueue=[];readyAudioQueue=[];
+  conversationAudioFinalPending=false;
+}
+function nativeAudioRms(pcm) {
+  if(pcm.length<2)return 0;
+  var count=0,energy=0;
+  for(var i=0;i+1<pcm.length;i+=2) {
+    var sample=pcm[i] | (pcm[i+1]<<8);
+    if(sample>32767)sample-=65536;
+    energy+=sample*sample;
+    count++;
+  }
+  return count?Math.sqrt(energy/count):0;
+}
+function nativeQueuePcm(pcm) {
+  if(!conversationSocket || conversationReceivedText)return;
+  if(conversationAudioQueue.length>=300) {
+    conversationFailure('Microphone audio queue overflow',conversationGeneration);
+    return;
+  }
+  conversationAudioQueue.push(pcm);
+  conversationFlushAudio();
+}
+function nativeEndTurn() {
+  if(!nativeMicMode || nativeMicWaiting)return;
+  nativeMicWaiting=true;
+  Pebble.sendAppMessage({COMMAND:'MIC_TURN_END'},function(){},
+    function(){console.log('Unable to stop watch microphone');});
+  nativeStopTimer=setTimeout(function(){
+    nativeStopTimer=null;
+    // A lost stop event must not leave Home Assistant waiting indefinitely.
+    if(nativeMicWaiting && nativeMicMode) {
+      conversationEnd=true;
+      conversationFlushAudio();
+    }
+  },2500);
+}
+Pebble.addEventListener('audiostreamstart',function(e) {
+  if(!nativeMicMode)return;
+  if(e.format && e.format!=='pcm16le') {
+    console.log('Unsupported mic stream format: '+e.format);
+    Pebble.sendAppMessage({COMMAND:'MIC_TURN_END'});
+    return;
+  }
+  nativeResetTurn();
+  if(e.sampleRate && Number(e.sampleRate)!==16000) {
+    console.log('Unexpected mic sample rate: '+e.sampleRate);
+    Pebble.sendAppMessage({COMMAND:'MIC_TURN_END'});
+    return;
+  }
+  nativeMicActive=true;
+});
+Pebble.addEventListener('audiostream',function(e) {
+  if(!nativeMicMode || nativeMicWaiting)return;
+  if(!(e.data instanceof ArrayBuffer))return;
+  if(!nativeMicActive)nativeMicActive=true;
+  var pcm=new Uint8Array(e.data);
+  if(pcm.length<2 || (pcm.length&1))return;
+  var ms=pcm.length*1000/NATIVE_PCM_BYTES_PER_SECOND;
+  var voice=nativeAudioRms(pcm)>=550;
+  nativeTotalMs+=ms;
+  if(!nativeSpeechStarted) {
+    nativePreRoll.push(pcm);
+    nativePreRollBytes+=pcm.length;
+    while(nativePreRollBytes>12000 && nativePreRoll.length>1)
+      nativePreRollBytes-=nativePreRoll.shift().length;
+    nativeVoicedMs=voice?nativeVoicedMs+ms:0;
+    if(nativeVoicedMs>=80) {
+      nativeSpeechStarted=true;
+      nativeSilenceMs=0;
+      conversationStart();
+      for(var i=0;i<nativePreRoll.length;i++)nativeQueuePcm(nativePreRoll[i]);
+      nativePreRoll=[];nativePreRollBytes=0;
+    }
+    // Avoid indefinite battery use in a room without speech.
+    if(nativeTotalMs>=22000 && !nativeSpeechStarted) {
+      nativeEndTurn();
+    }
+    return;
+  }
+  nativeQueuePcm(pcm);
+  if(voice)nativeSilenceMs=0;
+  else nativeSilenceMs+=ms;
+  if(nativeSilenceMs>=1400 || nativeTotalMs>=22000)nativeEndTurn();
+});
+Pebble.addEventListener('audiostreamstop',function() {
+  if(!nativeMicMode)return;
+  nativeMicActive=false;
+  if(nativeStopTimer){clearTimeout(nativeStopTimer);nativeStopTimer=null;}
+  if(nativeSpeechStarted && conversationSocket) {
+    nativeMicWaiting=true;
+    conversationEnd=true;
+    conversationFlushAudio();
+  } else if(!nativeMicWaiting) {
+    // Notification, focus loss or phone rejection: do not restart blindly.
+    Pebble.sendAppMessage({COMMAND:'MIC_MODE_OFF'});
+    nativeCancel();
+  } else {
+    Pebble.sendAppMessage({
+      COMMAND:'TEXT_RESPONSE_NO_AUDIO',TEXT:'No speech detected.'
+    },function(){Pebble.sendAppMessage({COMMAND:'CONV_RESUME'});});
+  }
+});
 function conversationShowReply(reply,gen) {
   var canSpeak=hasSpeaker && enableTts && !textOnly && haTts;
   var cmd=canSpeak?'TEXT_RESPONSE_8_16':'TEXT_RESPONSE_NO_AUDIO';
@@ -519,15 +606,11 @@ function conversationMaybeCompleteAudio() {
 
 Pebble.addEventListener('appmessage',function(e) {
   var d=e.payload;
-  if(d.COMMAND==='MIC_START'){conversationStart();return;}
-  if(d.COMMAND==='MIC_AUDIO'){
-    conversationAudioFrame(d.CHUNK, Number(d.VOLUME));return;
+  if(d.COMMAND==='MIC_MODE_ON'){
+    nativeMicMode=true;nativeResetTurn();return;
   }
-  if(d.COMMAND==='MIC_END'){
-    conversationEnd=true;conversationFlushAudio();return;
-  }
-  if(d.COMMAND==='MIC_CANCEL'){
-    ++conversationGeneration;conversationStopSocket();return;
+  if(d.COMMAND==='MIC_MODE_OFF'){
+    nativeCancel();return;
   }
   if (d.COMMAND !== 'DICTATION') return;
   if (!haUrl || !haToken) { errText('Set Home Assistant URL and token in settings.'); return; }
