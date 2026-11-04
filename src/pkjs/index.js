@@ -389,7 +389,9 @@ function conversationStart() {
   var url;
   try{url=normalizeUrl().replace(/^https:/i,'wss:')+'/api/websocket';}
   catch(e){conversationFailure(e.message,gen);return;}
-  var ws=new WebSocket(url);
+  var ws;
+  try {ws=new WebSocket(url);}
+  catch(e){conversationFailure('WebSocket unavailable: '+e.message,gen);return;}
   conversationSocket=ws;
   conversationStage='auth';
   conversationTimeout=setTimeout(function(){
@@ -515,7 +517,9 @@ function nativeEndTurn() {
   },2500);
 }
 Pebble.addEventListener('audiostreamstart',function(e) {
-  if(!nativeMicMode)return;
+  // The native audio transport can become ready before our AppMessage start
+  // acknowledgement; receiving this event itself proves this app owns it.
+  nativeMicMode=true;
   if(e.format && e.format!=='pcm16le') {
     console.log('Unsupported mic stream format: '+e.format);
     Pebble.sendAppMessage({COMMAND:'MIC_TURN_END'});
@@ -607,7 +611,9 @@ function conversationMaybeCompleteAudio() {
 Pebble.addEventListener('appmessage',function(e) {
   var d=e.payload;
   if(d.COMMAND==='MIC_MODE_ON'){
-    nativeMicMode=true;nativeResetTurn();return;
+    nativeMicMode=true;
+    if(!nativeMicActive)nativeResetTurn();
+    return;
   }
   if(d.COMMAND==='MIC_MODE_OFF'){
     nativeCancel();return;
