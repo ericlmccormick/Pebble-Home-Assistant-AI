@@ -77,7 +77,7 @@
     },
     "manifestVersion": 2,
     "usesPermissions": [
-      "Microphone"
+      "WatchMicrophone"
     ]
   },
   "version": "0.1.0"
