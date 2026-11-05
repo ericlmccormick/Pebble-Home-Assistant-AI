@@ -660,8 +660,9 @@ Pebble.addEventListener('appmessage',function(e) {
   }
   if (d.COMMAND !== 'DICTATION' && d.COMMAND !== 'CONV_DICTATION') return;
   var legacyTurn=d.COMMAND==='CONV_DICTATION';
-  if (!haUrl || !haToken || !d.TEXT) {
-    errText(!haUrl || !haToken ? 'Set Home Assistant URL and token.' : 'No dictation captured.');
+  if ((!useHaPlugin && (!haUrl || !haToken)) || !d.TEXT) {
+    errText(!useHaPlugin && (!haUrl || !haToken) ?
+      'Set Home Assistant URL and token.' : 'No dictation captured.');
     if(legacyTurn)Pebble.sendAppMessage({COMMAND:'CONV_MODE_STOP'});
     return;
   }
