@@ -78,7 +78,7 @@ jobs:
           assert 'Home Assistant timed out' in js
           assert 'failureCount>=5' in js
           assert pkg['pebble']['manifestVersion'] == 2
-          assert 'Microphone' in pkg['pebble']['usesPermissions']
+          assert 'WatchMicrophone' in pkg['pebble']['usesPermissions']
           for cmd in ('MIC_MODE_ON','MIC_MODE_OFF','CONV_RESUME','CONV_AUDIO_END'):
               assert cmd in c and cmd in js
           print('Static regression checks passed')
