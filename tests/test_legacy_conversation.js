@@ -4,7 +4,7 @@ const vm=require('vm');
 const sent=[],requests=[],timers=[];
 const store=new Map([
  ['HA_URL','https://example.test'],['HA_TOKEN','secret'],['HA_AGENT','conversation.google'],
- ['TEXT_ONLY','true'],['HA_CONVERSATION_ID','']
+ ['TEXT_ONLY','true'],['HA_CONVERSATION_ID',''],['USE_HA_PLUGIN','false']
 ]);
 const Pebble={listeners:{},getActiveWatchInfo:()=>({platform:'emery'}),
  addEventListener:function(name,callback){this.listeners[name]=callback;},
