@@ -432,6 +432,7 @@ function conversationStart() {
       } else if(ev.type==='stt-end') {
         conversationStage='intent';
         var recognized=data.stt_output && data.stt_output.text;
+        console.log('HA Assist STT completed, chars='+String(recognized||'').length);
         if(recognized) Pebble.sendAppMessage({
           COMMAND:'CONV_TRANSCRIPT',TEXT:String(recognized).substring(0,220)
         });
@@ -441,6 +442,8 @@ function conversationStart() {
         var response=data.intent_output && data.intent_output.response;
         var speech=response && response.speech && response.speech.plain;
         var reply=speech && speech.speech;
+        console.log('HA Assist intent response type='+(response && response.response_type || 'unknown')+
+          ', speech chars='+String(reply||'').length);
         if(data.conversation_id) {
           haConversationId=data.conversation_id;
           localStorage.setItem('HA_CONVERSATION_ID',haConversationId);
@@ -464,10 +467,11 @@ function conversationStart() {
 var nativeMicMode=false, nativeMicActive=false, nativeMicWaiting=false;
 var nativeSpeechStarted=false, nativePreRoll=[], nativePreRollBytes=0;
 var nativeVoicedMs=0, nativeSilenceMs=0, nativeTotalMs=0;
+var nativeNoiseFloor=80, nativeLastRms=0;
 var nativeStopTimer=null;
 var NATIVE_PCM_BYTES_PER_SECOND=32000;
 // Allow pauses while dictating a long request; the microphone stays live until the user finishes.
-var NATIVE_END_SILENCE_MS=5000;
+var NATIVE_END_SILENCE_MS=8000;
 var NATIVE_MAX_SPEECH_MS=90000;
 var NATIVE_MIN_UTTERANCE_MS=1200;
 function nativeResetTurn() {
@@ -476,6 +480,7 @@ function nativeResetTurn() {
   nativeSpeechStarted=false;
   nativePreRoll=[];nativePreRollBytes=0;
   nativeVoicedMs=0;nativeSilenceMs=0;nativeTotalMs=0;
+  nativeNoiseFloor=80;nativeLastRms=0;
   if(nativeStopTimer){clearTimeout(nativeStopTimer);nativeStopTimer=null;}
 }
 function nativeCancel() {
@@ -549,7 +554,13 @@ Pebble.addEventListener('audiostream',function(e) {
   var pcm=new Uint8Array(e.data);
   if(pcm.length<2 || (pcm.length&1))return;
   var ms=pcm.length*1000/NATIVE_PCM_BYTES_PER_SECOND;
-  var voice=nativeAudioRms(pcm)>=550;
+  var rms=nativeAudioRms(pcm);
+  // Calibrate quiet-room noise and use a lower, adaptive speech gate.
+  // A fixed RMS 550 treated ordinary low-volume syllables as silence.
+  if(!nativeSpeechStarted && rms<nativeNoiseFloor*2.5)
+    nativeNoiseFloor=nativeNoiseFloor*0.98+rms*0.02;
+  var voice=rms>=Math.max(180,Math.min(750,nativeNoiseFloor*3));
+  nativeLastRms=rms;
   if(!nativeSpeechStarted) {
     nativePreRoll.push(pcm);
     nativePreRollBytes+=pcm.length;
@@ -581,7 +592,9 @@ Pebble.addEventListener('audiostream',function(e) {
       nativeSilenceMs>=NATIVE_END_SILENCE_MS) ||
      nativeTotalMs>=NATIVE_MAX_SPEECH_MS) {
     console.log('Native mic: end of turn after '+Math.round(nativeTotalMs)+
-      'ms speaking window; trailing silence '+Math.round(nativeSilenceMs)+'ms');
+      'ms speaking window; trailing silence '+Math.round(nativeSilenceMs)+
+      'ms, last RMS '+Math.round(nativeLastRms)+
+      ', speech gate '+Math.round(Math.max(180,Math.min(750,nativeNoiseFloor*3))));
     nativeEndTurn();
   }
 });
