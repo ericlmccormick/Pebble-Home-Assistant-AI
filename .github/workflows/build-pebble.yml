@@ -24,17 +24,19 @@ jobs:
     timeout-minutes: 25
     steps:
       - name: Check out selected branch
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: '22'
+          package-manager-cache: false
 
       - name: Set up uv and Python 3.13
-        uses: astral-sh/setup-uv@v6
+        uses: astral-sh/setup-uv@v10.3.3
         with:
           python-version: '3.13'
+          enable-cache: false
 
       - name: Install Pebble CLI and application SDK
         shell: bash
@@ -65,7 +67,7 @@ jobs:
         run: pebble build
 
       - name: Upload PBW
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: pebble-home-assistant-ai-${{ github.ref_name }}-${{ github.sha }}
           path: build/**/*.pbw
