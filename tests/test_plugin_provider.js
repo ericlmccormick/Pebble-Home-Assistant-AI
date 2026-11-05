@@ -1,8 +1,9 @@
 const assert=require('assert'),fs=require('fs'),vm=require('vm');
 const code=fs.readFileSync('src/pkjs/index.js','utf8');
 const pkg=JSON.parse(fs.readFileSync('package.json','utf8'));
-const plugin=JSON.parse(fs.readFileSync('home-assistant-plugin/package.json','utf8'));
-const uuid=plugin.pebble.uuid;
+// The standalone plugin now lives in ericlmccormick/Pebble-HA-plug-in.
+// Keep the protocol UUID stable across repositories and releases.
+const uuid='a74370b6-929c-4ec0-b7ee-2fc6fca8db57';
 // Connection selector must be the first settings section, ahead of built-in
 // credentials, and retain a clear explanation of voice-mode limitations.
 const firstSection=code.slice(code.indexOf("var clayConfig = ["),code.indexOf("function configField("));
