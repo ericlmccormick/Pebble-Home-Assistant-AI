@@ -10,10 +10,10 @@ const firstSection=code.slice(code.indexOf("var clayConfig = ["),code.indexOf("f
 assert(firstSection.indexOf("messageKey:'USE_BUILTIN_CONNECTION'") > -1);
 assert(firstSection.indexOf("messageKey:'USE_BUILTIN_CONNECTION'") < firstSection.indexOf("messageKey:'HA_URL'"));
 assert(firstSection.includes("label:'Use built-in connection'"));
-assert(firstSection.includes('Continuous voice streaming and spoken TTS currently require the built-in connection.'));
+assert(firstSection.includes('For spoken responses in plugin mode'));
 assert(code.includes('function connectionModeClay()'));
 assert(code.includes("toggle.on('change',updateVisibility)"));
-assert(code.includes("['HA_URL','HA_TOKEN','HA_PIPELINE','HA_AGENT','HA_TTS']"));
+assert(code.includes("var audioFields=['HA_URL','HA_TOKEN','HA_TTS']"));
 assert(code.includes("var useHaPlugin = localStorage.getItem('USE_HA_PLUGIN') !== 'false'"));
 
 assert(pkg.pebble.usesPermissions.some(p=>p.plugin===uuid&&p.name==='HomeConverse'));
@@ -32,7 +32,8 @@ const context={console,require:n=>MockClay,Pebble,
 vm.createContext(context);vm.runInContext(code,context);
 // Exercise actual Clay show/hide callbacks rather than checking text alone.
 assert.strictEqual(typeof customClay,'function');
-const fieldNames=['HA_URL','HA_TOKEN','HA_PIPELINE','HA_AGENT','HA_TTS'];
+const fieldNames=['HA_PIPELINE','HA_AGENT'];
+const audioNames=['HA_URL','HA_TOKEN','HA_TTS'];
 const visibility={};
 let enabled=false,onBuild=null,onToggle=null;
 function item(key) {
@@ -42,7 +43,7 @@ function item(key) {
     hide:()=>{visibility[key]=false;}};
 }
 const items={};
-fieldNames.forEach(k=>items[k]=item(k));
+fieldNames.concat(audioNames).forEach(k=>items[k]=item(k));
 items.USE_BUILTIN_CONNECTION=item('USE_BUILTIN_CONNECTION');
 items.builtin_connection_heading=item('builtin_connection_heading');
 const clayPage={
@@ -56,12 +57,14 @@ assert(onBuild);
 onBuild();
 for(const key of fieldNames.concat('builtin_connection_heading'))
   assert.strictEqual(visibility[key],false,'Plugin default should hide '+key);
+for(const key of audioNames)assert.strictEqual(visibility[key],true,'Audio configuration should be visible '+key);
 enabled=true;onToggle();
 for(const key of fieldNames.concat('builtin_connection_heading'))
   assert.strictEqual(visibility[key],true,'Built-in toggle should show '+key);
 enabled=false;onToggle();
 for(const key of fieldNames.concat('builtin_connection_heading'))
   assert.strictEqual(visibility[key],false,'Switching back should hide '+key);
+for(const key of audioNames)assert.strictEqual(visibility[key],true,'Plugin mode must retain audio config '+key);
 Pebble.listeners.appmessage({payload:{COMMAND:'DICTATION',TEXT:'Turn off the kitchen lights'}});
 setImmediate(()=>{
   try {
@@ -77,3 +80,7 @@ setImmediate(()=>{
     console.log('Plugin provider toggle and text conversation regression passed');
   } catch(e){console.error(e);process.exitCode=1;}
 });
+
+// Plugin conversations must invoke the same WAV TTS queue when speech and credentials are enabled.
+assert(code.includes("COMMAND:canSpeak?'TEXT_RESPONSE_8_16':'TEXT_RESPONSE_NO_AUDIO'"));
+assert(code.includes('startTTSFetchLoop(generation);'));
