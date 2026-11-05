@@ -86,8 +86,14 @@ for(let i=0;i<240;i++)event('audiostream',{data:pcm(0)});
 assert(!sent.some(p=>p.COMMAND==='MIC_TURN_END'),
   '4.8 seconds of silence should not end the utterance');
 for(let i=0;i<10;i++)event('audiostream',{data:pcm(0)});
+assert(!sent.some(p=>p.COMMAND==='MIC_TURN_END'),
+  '5 seconds of trailing silence should not end an utterance');
+for(let i=0;i<140;i++)event('audiostream',{data:pcm(0)});
+assert(!sent.some(p=>p.COMMAND==='MIC_TURN_END'),
+  '7.8 seconds of trailing silence should not end an utterance');
+for(let i=0;i<10;i++)event('audiostream',{data:pcm(0)});
 assert(sent.some(p=>p.COMMAND==='MIC_TURN_END'),
-  '5 seconds of trailing silence should end the utterance');
+  '8 seconds of trailing silence should end the utterance');
 event('audiostreamstop',{});
 assert.deepStrictEqual(Array.from(new Uint8Array(opened.sent[opened.sent.length-1])),[7],
   'end of PCM is single handler byte');
