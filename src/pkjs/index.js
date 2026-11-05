@@ -51,7 +51,7 @@ var clayConfig = [
   {type:'section',items:[
     {type:'heading',defaultValue:'Connection Mode'},
     {type:'toggle',messageKey:'USE_BUILTIN_CONNECTION',label:'Use built-in connection',defaultValue:!useHaPlugin,
-      description:'Off (default): use the installed Home Assistant Bridge plugin for tap-to-talk text requests. On: use local Home Assistant URL/token and show the additional fields. Continuous voice streaming and spoken TTS currently require the built-in connection.'}
+      description:'Off (default): use Home Assistant Bridge for text conversations. For spoken responses in plugin mode, also configure the built-in URL, token and TTS engine below. Continuous voice streaming uses the built-in connection.'}
   ]},
   {type:'section',items:[
     {type:'heading',id:'builtin_connection_heading',defaultValue:'Built-in Connection (continuous voice)'},
@@ -65,7 +65,7 @@ var clayConfig = [
     {type:'input',messageKey:'HA_AGENT',label:'Conversation agent (tap-to-talk)',defaultValue:haAgent,
       description:'Choose Google AI or another agent. Blank uses Home Assistant default; separate from the conversation-mode pipeline.'},
     {type:'input',messageKey:'HA_TTS',label:'Text-to-speech engine',defaultValue:haTts,
-      description:'Speech playback entity, e.g. tts.home_assistant_cloud. Blank disables TTS.'}
+      description:'Required for spoken responses, even with the plugin selected. Blank disables TTS.'}
   ]},
   {type:'section',items:[
     {type:'heading',defaultValue:'Home Assistant Speech'},
@@ -95,7 +95,8 @@ function connectionModeClay() {
   var page=this;
   page.on(page.EVENTS.AFTER_BUILD,function() {
     var toggle=page.getItemByMessageKey('USE_BUILTIN_CONNECTION');
-    var fields=['HA_URL','HA_TOKEN','HA_PIPELINE','HA_AGENT','HA_TTS'];
+    var fields=['HA_PIPELINE','HA_AGENT'];
+    var audioFields=['HA_URL','HA_TOKEN','HA_TTS'];
     var heading=page.getItemById('builtin_connection_heading');
     function updateVisibility() {
       var show=!!toggle.get();
@@ -103,6 +104,11 @@ function connectionModeClay() {
       fields.forEach(function(key) {
         var item=page.getItemByMessageKey(key);
         if(item)item[show?'show':'hide']();
+      });
+      // Plugin-mode text requests can still use built-in credentials for WAV TTS.
+      audioFields.forEach(function(key) {
+        var item=page.getItemByMessageKey(key);
+        if(item)item.show();
       });
     }
     if(toggle) {
@@ -225,7 +231,7 @@ function configLoadThenOpen() {
   configUseInput('HA_AGENT',haAgent);
   configUseInput('HA_TTS',haTts);
   configUseInput('HA_PIPELINE',haPipeline);
-  if(useHaPlugin || !haUrl || !haToken) {
+  if(!haUrl || !haToken) {
     clay=new Clay(clayConfig,connectionModeClay,{autoHandleEvents:false});
     Pebble.openURL(clay.generateUrl());return;
   }
@@ -701,7 +707,7 @@ Pebble.addEventListener('appmessage',function(e) {
 // Plugin calls are request-scoped. Live PCM streaming remains on the direct
 // PebbleKit JS -> Home Assistant Assist WebSocket until the plugin host offers
 // streaming actions. Do not copy the plugin's private token into localStorage.
-function askHomeAssistantViaPlugin(prompt,legacyTurn) {
+function askHomeAssistantViaPlugin(prompt,skipAudio,legacyTurn) {
   var generation=++requestGeneration;
   if(typeof Pebble.invokeAction!=='function') {
     errText('Plugins require the Pebble mobile app plugin preview.');
@@ -722,10 +728,29 @@ function askHomeAssistantViaPlugin(prompt,legacyTurn) {
       haConversationId=String(data.conversation_id);
       localStorage.setItem('HA_CONVERSATION_ID',haConversationId);
     }
-    var text=String(data.text||'No response from Home Assistant.');
-    lastAnswer=text;
-    Pebble.sendAppMessage({COMMAND:'TEXT_RESPONSE_NO_AUDIO',TEXT:text.substring(0,1900)},
-      function(){if(legacyTurn)Pebble.sendAppMessage({COMMAND:'CONV_RESUME'});});
+    var answer=String(data.text||'No response from Home Assistant.');
+    lastAnswer=answer;
+    var canSpeak=!skipAudio && !!haUrl && !!haToken;
+    var message=answer;
+    if(!skipAudio && !canSpeak) {
+      console.log('Plugin TTS unavailable: configure built-in HA URL/token and TTS engine.');
+      message+='\n\n(Audio: set built-in HA URL and token in app settings.)';
+    }
+    Pebble.sendAppMessage({COMMAND:canSpeak?'TEXT_RESPONSE_8_16':'TEXT_RESPONSE_NO_AUDIO',
+      TEXT:message.substring(0,1900)},function(){
+      if(generation!==requestGeneration)return;
+      if(!canSpeak) {
+        if(legacyTurn)Pebble.sendAppMessage({COMMAND:'CONV_RESUME'});
+        return;
+      }
+      legacyConversationTurn=!!legacyTurn;
+      sentenceQueue=[];readyAudioQueue=[];isFetchingTTS=false;isSendingBLE=false;
+      js_adpcm_valpred=0;js_adpcm_index=0;
+      if(legacyTurn)conversationAudioFinalPending=true;
+      sentenceQueue=(answer.match(/[^.!?]+[.!?]*/g)||[answer])
+        .map(function(s){return s.trim();}).filter(function(s){return !!s;});
+      startTTSFetchLoop(generation);
+    });
   }).catch(function(error) {
     if(generation!==requestGeneration)return;
     errText('HA plugin: '+String(error.message||error).substring(0,185));
@@ -734,7 +759,7 @@ function askHomeAssistantViaPlugin(prompt,legacyTurn) {
 }
 function askHomeAssistant(prompt,skipAudio,legacyTurn) {
   if(useHaPlugin) {
-    askHomeAssistantViaPlugin(prompt,legacyTurn);
+    askHomeAssistantViaPlugin(prompt,skipAudio,legacyTurn);
     return;
   }
   var generation=++requestGeneration;
