@@ -3,13 +3,13 @@
 var URL_KEY='ha_bridge_url';
 var TOKEN_KEY='ha_bridge_token';
 var SOURCES=['home_assistant/entity','home_assistant/configured'];
-function baseUrl() { return (localStorage.getItem(URL_KEY)||'').replace(/\\/+$/,''); }
+function baseUrl() { return (localStorage.getItem(URL_KEY)||'').replace(/\/+$/,''); }
 function validBase(value) {
-  var s=String(value||'').trim().replace(/\\/+$/,'');
-  if(!/^https:\/\/[^\\s/?#@]+(?::[0-9]{1,5})?$/i.test(s)) throw Error('Use an HTTPS server URL with no path, credentials or query.');
+  var s=String(value||'').trim().replace(/\/+$/,'');
+  if(!/^https:\/\/[^\s/?#@]+(?::[0-9]{1,5})?$/i.test(s)) throw Error('Use an HTTPS server URL with no path, credentials or query.');
   return s;
 }
-function safeId(value) {return /^[a-z][a-z0-9_]*\\.[a-z0-9_]+$/.test(String(value||''));}
+function safeId(value) {return /^[a-z][a-z0-9_]*\.[a-z0-9_]+$/.test(String(value||''));}
 function safePart(value) {return /^[a-z][a-z0-9_]*$/.test(String(value||''));}
 function failure(code,message){return {ok:false,code:code,message:message};}
 async function api(path,method,body) {
