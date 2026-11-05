@@ -54,6 +54,10 @@ function callSource(item){return new Promise(resolve=>source({item},{data:d=>res
   r=await callAction('call_service',{domain:'../auth',service:'x'});
   assert.strictEqual(r.code,'INVALID_ARGS');
   assert(calls.every(c=>c.opt.headers.Authorization==='Bearer secret'));
+  assert(calls.some(c=>c.url.endsWith('/api/')&&!c.opt.headers['Content-Type']),
+    'GET connection test must not send Content-Type');
+  assert(calls.every(c=>c.opt.body || !c.opt.headers['Content-Type']),
+    'Only requests with JSON bodies should declare Content-Type');
   s=await callConfig({type:'forget'});assert(s.ok);
   assert(!stored.ha_bridge_token);
   console.log('Home Assistant plugin API and credential isolation checks passed');
