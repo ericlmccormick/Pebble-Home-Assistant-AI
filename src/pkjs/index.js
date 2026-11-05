@@ -707,7 +707,7 @@ Pebble.addEventListener('appmessage',function(e) {
 // Plugin calls are request-scoped. Live PCM streaming remains on the direct
 // PebbleKit JS -> Home Assistant Assist WebSocket until the plugin host offers
 // streaming actions. Do not copy the plugin's private token into localStorage.
-function askHomeAssistantViaPlugin(prompt,skipAudio,legacyTurn) {
+function askHomeAssistantViaPlugin(prompt,audioRequested,legacyTurn) {
   var generation=++requestGeneration;
   if(typeof Pebble.invokeAction!=='function') {
     errText('Plugins require the Pebble mobile app plugin preview.');
@@ -730,11 +730,11 @@ function askHomeAssistantViaPlugin(prompt,skipAudio,legacyTurn) {
     }
     var answer=String(data.text||'No response from Home Assistant.');
     lastAnswer=answer;
-    var canSpeak=!skipAudio && !!haUrl && !!haToken;
+    var canSpeak=audioRequested && !!haTts && !!haUrl && !!haToken;
     var message=answer;
-    if(!skipAudio && !canSpeak) {
+    if(audioRequested && !canSpeak) {
       console.log('Plugin TTS unavailable: configure built-in HA URL/token and TTS engine.');
-      message+='\n\n(Audio: set built-in HA URL and token in app settings.)';
+      message+='\n\n(Audio: configure built-in HA URL, token and TTS engine in app settings.)';
     }
     Pebble.sendAppMessage({COMMAND:canSpeak?'TEXT_RESPONSE_8_16':'TEXT_RESPONSE_NO_AUDIO',
       TEXT:message.substring(0,1900)},function(){
@@ -759,7 +759,7 @@ function askHomeAssistantViaPlugin(prompt,skipAudio,legacyTurn) {
 }
 function askHomeAssistant(prompt,skipAudio,legacyTurn) {
   if(useHaPlugin) {
-    askHomeAssistantViaPlugin(prompt,skipAudio,legacyTurn);
+    askHomeAssistantViaPlugin(prompt,hasSpeaker && enableTts && !skipAudio || (hasSpeaker && enableTts && !haTts),legacyTurn);
     return;
   }
   var generation=++requestGeneration;
