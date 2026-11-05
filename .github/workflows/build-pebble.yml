@@ -1,0 +1,73 @@
+name: Build Pebble App
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - native-mic-conversation
+      - continuous-native-conversation
+    paths:
+      - 'src/**'
+      - 'resources/**'
+      - 'package.json'
+      - 'wscript'
+      - '.github/workflows/build-pebble.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Compile Pebble PBW
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Check out selected branch
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Set up uv and Python 3.13
+        uses: astral-sh/setup-uv@v6
+        with:
+          python-version: '3.13'
+
+      - name: Install Pebble CLI and application SDK
+        shell: bash
+        run: |
+          uv tool install pebble-tool --python 3.13
+          pebble --version
+          pebble sdk install latest
+          pebble sdk list
+
+      - name: Install JavaScript dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: SDK microphone API diagnostic
+        shell: bash
+        run: |
+          echo "Source commit: $(git rev-parse HEAD)"
+          echo "Selected branch: ${GITHUB_REF_NAME}"
+          echo "Installed SDK directories:"
+          ls -la ~/.local/share/pebble-sdk/SDKs/ 2>/dev/null || true
+          echo "Checking whether downloaded SDK exposes the native microphone API:"
+          if grep -R -l 'mic_stream_to_phone_start' \
+             ~/.local/share/pebble-sdk/SDKs/current/sdk-core/pebble/emery/include 2>/dev/null | head -5; then
+            echo "Header search complete."
+          fi
+          echo "Note: A missing symbol here means the published app SDK is not yet compatible."
+
+      - name: Compile app
+        run: pebble build
+
+      - name: Upload PBW
+        uses: actions/upload-artifact@v4
+        with:
+          name: pebble-home-assistant-ai-${{ github.ref_name }}-${{ github.sha }}
+          path: build/**/*.pbw
+          if-no-files-found: error
+          retention-days: 30
