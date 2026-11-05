@@ -6,7 +6,8 @@ var haAgent = localStorage.getItem('HA_AGENT') || '';
 var haTts = localStorage.getItem('HA_TTS') || '';
 var haPipeline = localStorage.getItem('HA_PIPELINE') || '';
 var haConversationId = localStorage.getItem('HA_CONVERSATION_ID') || '';
-var useHaPlugin = localStorage.getItem('USE_HA_PLUGIN') === 'true';
+// Existing users keep their saved mode. New installations use the plugin.
+var useHaPlugin = localStorage.getItem('USE_HA_PLUGIN') !== 'false';
 var HA_PLUGIN_UUID = 'a74370b6-929c-4ec0-b7ee-2fc6fca8db57';
 var enableTts = localStorage.getItem('ENABLE_TTS') !== 'false';
 // One-time migration: old Text-only setting overrode Speak responses.
@@ -45,15 +46,15 @@ var stepTable = [
 var indexTable = [-1,-1,-1,-1,2,4,6,8,-1,-1,-1,-1,2,4,6,8];
 var clayConfig = [
   {type:'heading',defaultValue:'Home Assistant AI'},
-  // Keep the connection provider at the top where it is immediately visible.
-  // OFF = built-in Home Assistant connection, ON = Home Assistant Bridge plugin.
+  // Top-level mode switch: plugin is the default. Clay shows direct fields
+  // immediately when the user enables the built-in connection.
   {type:'section',items:[
     {type:'heading',defaultValue:'Connection Mode'},
-    {type:'toggle',messageKey:'USE_HA_PLUGIN',label:'Use Home Assistant plugin',defaultValue:useHaPlugin,
-      description:'Off: built-in connection. On: Home Assistant Bridge handles tap-to-talk text conversations without sharing its token. Continuous voice streaming and spoken TTS still require the built-in connection.'}
+    {type:'toggle',messageKey:'USE_BUILTIN_CONNECTION',label:'Use built-in connection',defaultValue:!useHaPlugin,
+      description:'Off (default): use the installed Home Assistant Bridge plugin for tap-to-talk text requests. On: use local Home Assistant URL/token and show the additional fields. Continuous voice streaming and spoken TTS currently require the built-in connection.'}
   ]},
   {type:'section',items:[
-    {type:'heading',defaultValue:'Built-in Connection (continuous voice)'},
+    {type:'heading',id:'builtin_connection_heading',defaultValue:'Built-in Connection (continuous voice)'},
     {type:'input',messageKey:'HA_URL',label:'Home Assistant HTTPS URL',defaultValue:haUrl,
       description:'Public HTTPS root URL, no /api path',attributes:{type:'url',autocapitalize:'off',autocorrect:'off'}},
     {type:'input',messageKey:'HA_TOKEN',label:'Long-lived access token',
@@ -62,12 +63,12 @@ var clayConfig = [
     {type:'input',messageKey:'HA_PIPELINE',label:'Speech-to-text / Assist pipeline',defaultValue:haPipeline,
       description:'Used by hands-free conversation mode. Choose the pipeline containing your desired STT engine; blank uses the preferred Assist pipeline.'},
     {type:'input',messageKey:'HA_AGENT',label:'Conversation agent (tap-to-talk)',defaultValue:haAgent,
-      description:'Choose Google AI or another agent. Blank uses Home Assistant default; separate from the conversation-mode pipeline.'}
+      description:'Choose Google AI or another agent. Blank uses Home Assistant default; separate from the conversation-mode pipeline.'},
+    {type:'input',messageKey:'HA_TTS',label:'Text-to-speech engine',defaultValue:haTts,
+      description:'Speech playback entity, e.g. tts.home_assistant_cloud. Blank disables TTS.'}
   ]},
   {type:'section',items:[
     {type:'heading',defaultValue:'Home Assistant Speech'},
-    {type:'input',messageKey:'HA_TTS',label:'Text-to-speech engine',defaultValue:haTts,
-      description:'Speech playback entity, e.g. tts.home_assistant_cloud. Blank disables TTS.'},
     {type:'toggle',messageKey:'ENABLE_TTS',label:'Speak responses on watch',defaultValue:enableTts,
       description:'On: display text and play spoken responses when TTS is configured. Off: text only.'},
     {type:'toggle',messageKey:'AUTO_SEND',label:'Send speech without confirmation',defaultValue:autoSend,
@@ -87,7 +88,30 @@ var clayConfig = [
 ];
 // Build dropdowns from the connected Home Assistant instance whenever the
 // settings page opens. Keep the original input controls as an offline fallback.
-var clay = new Clay(clayConfig, null, {autoHandleEvents:false});
+// Runs inside the Clay configuration page, not PebbleKit JS. Each local
+// input is hidden on load in plugin mode, and shown as soon as the toggle
+// changes. This keeps entered values intact while switching modes.
+function connectionModeClay() {
+  var page=this;
+  page.on(page.EVENTS.AFTER_BUILD,function() {
+    var toggle=page.getItemByMessageKey('USE_BUILTIN_CONNECTION');
+    var fields=['HA_URL','HA_TOKEN','HA_PIPELINE','HA_AGENT','HA_TTS'];
+    var heading=page.getItemById('builtin_connection_heading');
+    function updateVisibility() {
+      var show=!!toggle.get();
+      if(heading)heading[show?'show':'hide']();
+      fields.forEach(function(key) {
+        var item=page.getItemByMessageKey(key);
+        if(item)item[show?'show':'hide']();
+      });
+    }
+    if(toggle) {
+      updateVisibility();
+      toggle.on('change',updateVisibility);
+    }
+  });
+}
+var clay = new Clay(clayConfig, connectionModeClay, {autoHandleEvents:false});
 var configDiscoveryGeneration=0;
 
 function configField(key) {
@@ -201,8 +225,8 @@ function configLoadThenOpen() {
   configUseInput('HA_AGENT',haAgent);
   configUseInput('HA_TTS',haTts);
   configUseInput('HA_PIPELINE',haPipeline);
-  if(!haUrl || !haToken) {
-    clay=new Clay(clayConfig,null,{autoHandleEvents:false});
+  if(useHaPlugin || !haUrl || !haToken) {
+    clay=new Clay(clayConfig,connectionModeClay,{autoHandleEvents:false});
     Pebble.openURL(clay.generateUrl());return;
   }
   var statesPromise=fetch(normalizeUrl()+'/api/states',{
@@ -219,7 +243,7 @@ function configLoadThenOpen() {
   // Allow slow/offline HA to fail gracefully while preserving manual inputs.
   Promise.all([statesPromise,pipelinesPromise]).then(function() {
     if(generation!==configDiscoveryGeneration)return;
-    clay=new Clay(clayConfig,null,{autoHandleEvents:false});
+    clay=new Clay(clayConfig,connectionModeClay,{autoHandleEvents:false});
     Pebble.openURL(clay.generateUrl());
   });
 }
@@ -235,8 +259,8 @@ Pebble.addEventListener('webviewclosed',function(e) {
     }
     return localStorage.getItem(name) || '';
   }
-  if (s.USE_HA_PLUGIN) {
-    useHaPlugin=!!s.USE_HA_PLUGIN.value;
+  if (s.USE_BUILTIN_CONNECTION && typeof s.USE_BUILTIN_CONNECTION.value!=='undefined') {
+    useHaPlugin=!s.USE_BUILTIN_CONNECTION.value;
     localStorage.setItem('USE_HA_PLUGIN',useHaPlugin?'true':'false');
   }
   haUrl = saved('HA_URL','HA_URL').trim().replace(/\/+$/,'');
