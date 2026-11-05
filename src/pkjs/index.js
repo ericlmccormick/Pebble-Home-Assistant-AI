@@ -702,7 +702,7 @@ Pebble.addEventListener('appmessage',function(e) {
     return;
   }
   var skipAudio=!hasSpeaker || !enableTts || !haTts || d.VOLUME === 0;
-  askHomeAssistant(d.TEXT,skipAudio,legacyTurn);
+  askHomeAssistant(d.TEXT,skipAudio,legacyTurn,hasSpeaker && enableTts && d.VOLUME !== 0);
 });
 // Plugin calls are request-scoped. Live PCM streaming remains on the direct
 // PebbleKit JS -> Home Assistant Assist WebSocket until the plugin host offers
@@ -757,9 +757,9 @@ function askHomeAssistantViaPlugin(prompt,audioRequested,legacyTurn) {
     if(legacyTurn)Pebble.sendAppMessage({COMMAND:'CONV_MODE_STOP'});
   });
 }
-function askHomeAssistant(prompt,skipAudio,legacyTurn) {
+function askHomeAssistant(prompt,skipAudio,legacyTurn,audioRequested) {
   if(useHaPlugin) {
-    askHomeAssistantViaPlugin(prompt,hasSpeaker && enableTts && !skipAudio || (hasSpeaker && enableTts && !haTts),legacyTurn);
+    askHomeAssistantViaPlugin(prompt,audioRequested,legacyTurn);
     return;
   }
   var generation=++requestGeneration;
