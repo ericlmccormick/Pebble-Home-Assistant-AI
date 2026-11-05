@@ -88,6 +88,8 @@ jobs:
           assert 'dictation_session_enable_confirmation' in c
           assert 'dictation_session_enable_error_dialogs' in c
           assert 'You said:' in c
+          assert "messageKey:'USE_BUILTIN_CONNECTION'" in js
+          assert "toggle.on('change',updateVisibility)" in js
           assert "messageKey:'ENABLE_TTS'" in js
           assert "messageKey:'TEXT_ONLY'" not in js
           assert "messageKey:'AUTO_SEND'" in js
