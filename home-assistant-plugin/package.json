@@ -1,7 +1,7 @@
 {
   "name": "pebble-home-assistant-plugin",
   "author": "Eric McCormick",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "pebble": {
     "displayName": "Home Assistant Bridge",
     "uuid": "a74370b6-929c-4ec0-b7ee-2fc6fca8db57",
