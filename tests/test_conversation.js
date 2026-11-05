@@ -50,6 +50,20 @@ assert(!sent.some(p=>p.COMMAND==='MIC_TURN_END'),
   'quiet room must not stop continuous listening');
 for(let i=0;i<5;i++)event('audiostream',{data:pcm(1000)});
 assert(opened,'speech should start HA WebSocket');
+assert.strictEqual(opened.url,'wss://test.example/api/websocket');
+function msg(object){opened.onmessage({data:JSON.stringify(object)});}
+msg({type:'auth_required'});
+assert.deepStrictEqual(JSON.parse(opened.sent[0]),{type:'auth',access_token:'test-token'});
+msg({type:'auth_ok'});
+const command=JSON.parse(opened.sent[1]);
+assert.strictEqual(command.type,'assist_pipeline/run');
+assert.strictEqual(command.start_stage,'stt');
+assert.strictEqual(command.end_stage,'intent');
+assert.strictEqual(command.input.sample_rate,16000);
+msg({type:'event',id:command.id,event:{
+  type:'run-start',data:{runner_data:{stt_binary_handler_id:7}}
+}});
+
 // Regression: 24 seconds of idle listening before speech must NOT consume
 // the spoken-turn recording budget and immediately cut the speaker off.
 for(let i=0;i<240;i++)event('audiostream',{data:pcm(0)});
@@ -64,19 +78,6 @@ assert(!sent.some(p=>p.COMMAND==='MIC_TURN_END'),
 for(let i=0;i<10;i++)event('audiostream',{data:pcm(1000)});
 assert(!sent.some(p=>p.COMMAND==='MIC_TURN_END'),
   'resuming speech must reset the end-of-speech silence timer');
-assert.strictEqual(opened.url,'wss://test.example/api/websocket');
-function msg(object){opened.onmessage({data:JSON.stringify(object)});}
-msg({type:'auth_required'});
-assert.deepStrictEqual(JSON.parse(opened.sent[0]),{type:'auth',access_token:'test-token'});
-msg({type:'auth_ok'});
-const command=JSON.parse(opened.sent[1]);
-assert.strictEqual(command.type,'assist_pipeline/run');
-assert.strictEqual(command.start_stage,'stt');
-assert.strictEqual(command.end_stage,'intent');
-assert.strictEqual(command.input.sample_rate,16000);
-msg({type:'event',id:command.id,event:{
-  type:'run-start',data:{runner_data:{stt_binary_handler_id:7}}
-}});
 assert(opened.sent.length>2,'native audio forwarded');
 const packet=new Uint8Array(opened.sent[2]);
 assert.equal(packet[0],7);
