@@ -955,32 +955,41 @@ function pluginResult(result,context){
   try{return JSON.parse(result.text||'{}');}
   catch(e){throw Error(context+': invalid plugin response');}
 }
-function pluginFetchWav(sentence,gen){
-  var session=null;
-  return pluginAction('tts_prepare',{text:sentence}).then(function(result){
+// Plugin returns 16kHz IMA ADPCM ready for the watch; do not encode twice.
+var pluginImaPredictor=0,pluginImaIndex=0;
+function pluginFetchAdpcm(sentence,gen){
+  var session=null,nextPredictor=0,nextIndex=0;
+  return pluginAction('tts_prepare',{text:sentence,
+    predictor:pluginImaPredictor,index:pluginImaIndex}).then(function(result){
     var meta=pluginResult(result,'TTS preparation');
-    if(!meta.session_id||!Number.isInteger(meta.length)||meta.length<44||meta.length>1500000)
-      throw Error('Invalid plugin TTS session');
-    session=String(meta.session_id);
+    if(meta.format!=='ima_adpcm4'||meta.sample_rate!==16000||
+       meta.channels!==1||!Number.isInteger(meta.length)||meta.length<1||
+       meta.length>1500000||!Number.isInteger(meta.next_predictor)||
+       !Number.isInteger(meta.next_index))
+      throw Error('Unsupported plugin TTS format');
+    nextPredictor=meta.next_predictor;nextIndex=meta.next_index;
+    session=String(meta.session_id||'');
+    if(!session)throw Error('Missing TTS session');
     var length=meta.length,step=meta.chunk_bytes||6000;
     if(step!==6000)throw Error('Unsupported TTS chunk size');
     var data=new Uint8Array(length);
     function receive(offset){
       if(gen!==requestGeneration)throw Error('TTS cancelled');
-      if(offset>=length)return data.buffer;
+      if(offset>=length)return data;
       return pluginAction('tts_chunk',{session_id:session,offset:offset}).then(function(reply){
         var part=pluginResult(reply,'TTS chunk');
         var bytes=pluginDecodeBase64(String(part.audio||''));
-        if(part.offset!==offset||!bytes.length||bytes.length>step||offset+bytes.length>length)
-          throw Error('Invalid plugin TTS audio chunk');
+        if(part.offset!==offset||bytes.length!==Math.min(step,length-offset))
+          throw Error('Invalid plugin ADPCM chunk');
         data.set(bytes,offset);
         return receive(offset+bytes.length);
       });
     }
     return receive(0);
-  }).then(function(audio){return wavToPcm(audio);}).then(function(pcm){
+  }).then(function(audio){
     if(session)pluginAction('tts_release',{session_id:session}).catch(function(){});
-    return pcm;
+    pluginImaPredictor=nextPredictor;pluginImaIndex=nextIndex;
+    return Array.from(audio);
   },function(error){
     if(session)pluginAction('tts_release',{session_id:session}).catch(function(){});
     throw error;
@@ -992,9 +1001,9 @@ function startPluginTTSFetchLoop(gen){
   }
   isFetchingTTS=true;
   var sentence=sentenceQueue.shift();
-  pluginFetchWav(sentence,gen).then(function(pcm){
+  pluginFetchAdpcm(sentence,gen).then(function(adpcm){
     if(gen!==requestGeneration)return;
-    readyAudioQueue.push(encodeADPCM(lowPassFilter(pcm)));
+    readyAudioQueue.push(adpcm);
     isFetchingTTS=false;
     if(!isSendingBLE)startBLESendLoop();
     startPluginTTSFetchLoop(gen);
