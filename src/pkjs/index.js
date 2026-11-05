@@ -51,7 +51,7 @@ var clayConfig = [
   {type:'section',items:[
     {type:'heading',defaultValue:'Connection Mode'},
     {type:'toggle',messageKey:'USE_BUILTIN_CONNECTION',label:'Use built-in connection',defaultValue:!useHaPlugin,
-      description:'Off (default): use the installed Home Assistant Bridge plugin for tap-to-talk text requests. On: use local Home Assistant URL/token and show the additional fields. Continuous voice streaming and spoken TTS currently require the built-in connection.'}
+      description:'Off (default): plugin handles conversations and speech generation. On: use built-in Home Assistant URL/token. Continuous voice streaming is currently supported only in built-in mode.'}
   ]},
   {type:'section',items:[
     {type:'heading',id:'builtin_connection_heading',defaultValue:'Built-in Connection (continuous voice)'},
@@ -695,13 +695,13 @@ Pebble.addEventListener('appmessage',function(e) {
     if(legacyTurn)Pebble.sendAppMessage({COMMAND:'CONV_MODE_STOP'});
     return;
   }
-  var skipAudio=!hasSpeaker || !enableTts || !haTts || d.VOLUME === 0;
+  var skipAudio=!hasSpeaker || !enableTts || (!useHaPlugin && !haTts) || d.VOLUME === 0;
   askHomeAssistant(d.TEXT,skipAudio,legacyTurn);
 });
 // Plugin calls are request-scoped. Live PCM streaming remains on the direct
 // PebbleKit JS -> Home Assistant Assist WebSocket until the plugin host offers
 // streaming actions. Do not copy the plugin's private token into localStorage.
-function askHomeAssistantViaPlugin(prompt,legacyTurn) {
+function askHomeAssistantViaPlugin(prompt,skipAudio,legacyTurn) {
   var generation=++requestGeneration;
   if(typeof Pebble.invokeAction!=='function') {
     errText('Plugins require the Pebble mobile app plugin preview.');
@@ -722,10 +722,20 @@ function askHomeAssistantViaPlugin(prompt,legacyTurn) {
       haConversationId=String(data.conversation_id);
       localStorage.setItem('HA_CONVERSATION_ID',haConversationId);
     }
-    var text=String(data.text||'No response from Home Assistant.');
-    lastAnswer=text;
-    Pebble.sendAppMessage({COMMAND:'TEXT_RESPONSE_NO_AUDIO',TEXT:text.substring(0,1900)},
-      function(){if(legacyTurn)Pebble.sendAppMessage({COMMAND:'CONV_RESUME'});});
+    var answer=String(data.text||'No response from Home Assistant.');
+    lastAnswer=answer;
+    Pebble.sendAppMessage({COMMAND:skipAudio?'TEXT_RESPONSE_NO_AUDIO':'TEXT_RESPONSE_8_16',
+      TEXT:answer.substring(0,1900)},function(){
+      if(generation!==requestGeneration)return;
+      if(skipAudio){if(legacyTurn)Pebble.sendAppMessage({COMMAND:'CONV_RESUME'});return;}
+      legacyConversationTurn=!!legacyTurn;
+      sentenceQueue=[];readyAudioQueue=[];isFetchingTTS=false;isSendingBLE=false;
+      js_adpcm_valpred=0;js_adpcm_index=0;
+      if(legacyTurn)conversationAudioFinalPending=true;
+      sentenceQueue=(answer.match(/[^.!?]+[.!?]*/g)||[answer])
+        .map(function(s){return s.trim();}).filter(function(s){return !!s;});
+      startPluginTTSFetchLoop(generation);
+    });
   }).catch(function(error) {
     if(generation!==requestGeneration)return;
     errText('HA plugin: '+String(error.message||error).substring(0,185));
@@ -734,7 +744,7 @@ function askHomeAssistantViaPlugin(prompt,legacyTurn) {
 }
 function askHomeAssistant(prompt,skipAudio,legacyTurn) {
   if(useHaPlugin) {
-    askHomeAssistantViaPlugin(prompt,legacyTurn);
+    askHomeAssistantViaPlugin(prompt,skipAudio,legacyTurn);
     return;
   }
   var generation=++requestGeneration;
@@ -913,6 +923,82 @@ function fetchWav(path,gen,attempt) {
     if(attempt<2 && retryable && gen===requestGeneration)
       return haDelay(600*(attempt+1)).then(function(){return fetchWav(path,gen,attempt+1);});
     throw e;
+  });
+}
+// All HA traffic in plugin mode goes through the plugin's scoped actions.
+// Chunks are transferred as base64 because the preview action result is text.
+var pluginB64Alphabet='ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+function pluginDecodeBase64(input){
+  var output=[],buffer=0,bits=0;
+  for(var i=0;i<input.length;i++){
+    var ch=input.charAt(i);
+    if(ch==='=')break;
+    var v=pluginB64Alphabet.indexOf(ch);
+    if(v<0)throw Error('Invalid plugin audio encoding');
+    buffer=(buffer<<6)|v;bits+=6;
+    if(bits>=8){bits-=8;output.push((buffer>>bits)&255);}
+  }
+  return output;
+}
+function pluginAction(name,args){
+  return Pebble.invokeAction({plugin:HA_PLUGIN_UUID,action:name,args:args});
+}
+function pluginResult(result,context){
+  if(!result||!result.ok)throw Error(context+': '+String(result&&result.message||'plugin call failed'));
+  try{return JSON.parse(result.text||'{}');}
+  catch(e){throw Error(context+': invalid plugin response');}
+}
+function pluginFetchWav(sentence,gen){
+  var session=null;
+  return pluginAction('tts_prepare',{text:sentence}).then(function(result){
+    var meta=pluginResult(result,'TTS preparation');
+    if(!meta.session_id||!Number.isInteger(meta.length)||meta.length<44||meta.length>1500000)
+      throw Error('Invalid plugin TTS session');
+    session=String(meta.session_id);
+    var length=meta.length,step=meta.chunk_bytes||6000;
+    if(step!==6000)throw Error('Unsupported TTS chunk size');
+    var data=new Uint8Array(length);
+    function receive(offset){
+      if(gen!==requestGeneration)throw Error('TTS cancelled');
+      if(offset>=length)return data.buffer;
+      return pluginAction('tts_chunk',{session_id:session,offset:offset}).then(function(reply){
+        var part=pluginResult(reply,'TTS chunk');
+        var bytes=pluginDecodeBase64(String(part.audio||''));
+        if(part.offset!==offset||!bytes.length||bytes.length>step||offset+bytes.length>length)
+          throw Error('Invalid plugin TTS audio chunk');
+        data.set(bytes,offset);
+        return receive(offset+bytes.length);
+      });
+    }
+    return receive(0);
+  }).then(function(audio){return wavToPcm(audio);}).then(function(pcm){
+    if(session)pluginAction('tts_release',{session_id:session}).catch(function(){});
+    return pcm;
+  },function(error){
+    if(session)pluginAction('tts_release',{session_id:session}).catch(function(){});
+    throw error;
+  });
+}
+function startPluginTTSFetchLoop(gen){
+  if(gen!==requestGeneration||isFetchingTTS||!sentenceQueue.length){
+    conversationMaybeCompleteAudio();return;
+  }
+  isFetchingTTS=true;
+  var sentence=sentenceQueue.shift();
+  pluginFetchWav(sentence,gen).then(function(pcm){
+    if(gen!==requestGeneration)return;
+    readyAudioQueue.push(encodeADPCM(lowPassFilter(pcm)));
+    isFetchingTTS=false;
+    if(!isSendingBLE)startBLESendLoop();
+    startPluginTTSFetchLoop(gen);
+    conversationMaybeCompleteAudio();
+  }).catch(function(error){
+    if(gen!==requestGeneration)return;
+    isFetchingTTS=false;conversationAudioFinalPending=false;sentenceQueue=[];
+    console.log('Home Assistant plugin TTS: '+String(error.message||error));
+    Pebble.sendAppMessage({COMMAND:'TEXT_RESPONSE_NO_AUDIO',
+      TEXT:(lastAnswer+'\\n\\nAudio error: '+String(error.message||error)).substring(0,1900)},
+      function(){if(legacyConversationTurn)Pebble.sendAppMessage({COMMAND:'CONV_RESUME'});});
   });
 }
 function startTTSFetchLoop(gen) {
