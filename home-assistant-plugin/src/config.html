@@ -37,7 +37,7 @@ button.alt{background:#555}.note{font-size:13px;opacity:.8}#status{white-space:p
   };
   $('test').onclick=async function(){
     status('Testing Home Assistant…');
-    try{var r=await send({type:'test'});status(r.ok?'Connected to '+r.name:r.error||'Connection failed.');}
+    try{var r=await send({type:'test'});status(r.ok?'Connected to '+r.name:((r.stage?r.stage+': ':'')+(r.error||'Connection failed.')));}
     catch(e){status('Connection failed: '+e.message);}
   };
   $('forget').onclick=async function(){
