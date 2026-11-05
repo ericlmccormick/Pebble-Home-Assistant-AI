@@ -4,6 +4,20 @@ Home Assistant AI is a separate app built from the proven [Pebble Gemini](https:
 
 **Uses Home Assistant for both the conversation agent and text-to-speech.** No Gemini API key and no Google TTS account are required.
 
+## Build online using GitHub Actions (Windows, no local installation)
+
+1. Open [Build Pebble App](https://github.com/ericlmccormick/Pebble-Home-Assistant-AI/actions/workflows/build-pebble.yml).
+2. Click **Run workflow** and choose `continuous-native-conversation`.
+3. Open the latest successful run, scroll to **Artifacts**, and download the
+   `pebble-home-assistant-ai-continuous-native-conversation-...` ZIP.
+4. Unzip it to obtain the `.pbw` app, then sideload it using the Pebble phone app.
+
+The workflow installs the official Pebble CLI and latest application SDK on
+GitHub's Linux runner, builds all configured watch targets, and retains the
+download for 30 days. No Windows SDK or CloudPebble compiler is required.
+Automated compilation does not substitute for testing native microphone
+permissions, phone transport and audio/voice turn handling on a real watch.
+
 ## Setup
 
 In Home Assistant, configure your preferred conversation agent and TTS entity, such as Piper. In your HA user profile create a long-lived access token. In Pebble app settings, enter:
