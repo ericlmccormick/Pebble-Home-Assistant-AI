@@ -554,6 +554,19 @@ static void select_short_click_handler(ClickRecognizerRef recognizer, void *cont
     stop_audio();                               
   }
   #endif
+#if HA_MIC_AVAILABLE
+  // While in hands-free conversation, a short Select ends only this spoken
+  // request. Do not leave conversation mode or open the system dictation UI.
+  if (s_conversation_mode && !s_dictation_fallback) {
+    if (!s_native_waiting && s_native_streaming) {
+      s_native_waiting = true;
+      native_mic_stop();
+      set_ui_state(UI_STATE_THINKING);
+      set_status("Processing speech...");
+    }
+    return;
+  }
+#endif
   if(s_conversation_mode) conversation_disable();
   set_status(NULL);
   if (!s_dictation_session) {
