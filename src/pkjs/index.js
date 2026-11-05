@@ -680,6 +680,13 @@ function conversationMaybeCompleteAudio() {
 Pebble.addEventListener('appmessage',function(e) {
   var d=e.payload;
   if(d.COMMAND==='MIC_MODE_ON'){
+    if(useHaPlugin){
+      nativeCancel();
+      Pebble.sendAppMessage({COMMAND:'MIC_MODE_OFF'},function(){
+        errText('Hands-free streaming is not yet supported by the Pebble plugin API. Use Select for plugin-powered dictation.');
+      });
+      return;
+    }
     nativeMicMode=true;
     if(!nativeMicActive)nativeResetTurn();
     return;
