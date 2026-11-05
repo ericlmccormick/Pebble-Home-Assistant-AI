@@ -466,6 +466,8 @@ var nativeSpeechStarted=false, nativePreRoll=[], nativePreRollBytes=0;
 var nativeVoicedMs=0, nativeSilenceMs=0, nativeTotalMs=0;
 var nativeStopTimer=null;
 var NATIVE_PCM_BYTES_PER_SECOND=32000;
+var NATIVE_END_SILENCE_MS=2500;
+var NATIVE_MAX_SPEECH_MS=60000;
 function nativeResetTurn() {
   nativeMicActive=false;
   nativeMicWaiting=false;
@@ -546,7 +548,6 @@ Pebble.addEventListener('audiostream',function(e) {
   if(pcm.length<2 || (pcm.length&1))return;
   var ms=pcm.length*1000/NATIVE_PCM_BYTES_PER_SECOND;
   var voice=nativeAudioRms(pcm)>=550;
-  nativeTotalMs+=ms;
   if(!nativeSpeechStarted) {
     nativePreRoll.push(pcm);
     nativePreRollBytes+=pcm.length;
@@ -555,7 +556,10 @@ Pebble.addEventListener('audiostream',function(e) {
     nativeVoicedMs=voice?nativeVoicedMs+ms:0;
     if(nativeVoicedMs>=80) {
       nativeSpeechStarted=true;
+      // Count the spoken turn, not the time spent waiting for the user to speak.
+      nativeTotalMs=0;
       nativeSilenceMs=0;
+      console.log('Native mic: speech started');
       conversationStart();
       for(var i=0;i<nativePreRoll.length;i++)nativeQueuePcm(nativePreRoll[i]);
       nativePreRoll=[];nativePreRollBytes=0;
@@ -566,9 +570,15 @@ Pebble.addEventListener('audiostream',function(e) {
     return;
   }
   nativeQueuePcm(pcm);
+  nativeTotalMs+=ms;
   if(voice)nativeSilenceMs=0;
   else nativeSilenceMs+=ms;
-  if(nativeSilenceMs>=1400 || nativeTotalMs>=22000)nativeEndTurn();
+  if(nativeSilenceMs>=NATIVE_END_SILENCE_MS ||
+     nativeTotalMs>=NATIVE_MAX_SPEECH_MS) {
+    console.log('Native mic: end of turn after '+Math.round(nativeTotalMs)+
+      'ms speaking window; trailing silence '+Math.round(nativeSilenceMs)+'ms');
+    nativeEndTurn();
+  }
 });
 Pebble.addEventListener('audiostreamstop',function() {
   if(!nativeMicMode)return;
