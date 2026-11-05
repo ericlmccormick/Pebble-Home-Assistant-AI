@@ -58,6 +58,9 @@ jobs:
           assert 'i < bytes_to_decode' in c
           assert 'if (s_buffer_count == 0) schedule_close_timer();' in c
           assert 's_buffer_count >= PLAYBACK_ADPCM_BYTES' not in c
+          assert 'native_mic_stop();' in c
+          assert 'if (s_conversation_mode && !s_dictation_fallback)' in c
+          assert 'if (!s_native_waiting && s_native_streaming)' in c
           assert 'mic_stream_to_phone_start' in c
           assert 's_native_phone_accepted' in c
           for stop_reason in ('MicStreamStopReasonPhone','MicStreamStopReasonFocusLost',
