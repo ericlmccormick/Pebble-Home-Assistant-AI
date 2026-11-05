@@ -6,6 +6,8 @@ var haAgent = localStorage.getItem('HA_AGENT') || '';
 var haTts = localStorage.getItem('HA_TTS') || '';
 var haPipeline = localStorage.getItem('HA_PIPELINE') || '';
 var haConversationId = localStorage.getItem('HA_CONVERSATION_ID') || '';
+var useHaPlugin = localStorage.getItem('USE_HA_PLUGIN') === 'true';
+var HA_PLUGIN_UUID = 'a74370b6-929c-4ec0-b7ee-2fc6fca8db57';
 var enableTts = localStorage.getItem('ENABLE_TTS') !== 'false';
 var autoSend = localStorage.getItem('AUTO_SEND') !== 'false';
 var textOnly = localStorage.getItem('TEXT_ONLY') === 'true';
@@ -39,6 +41,8 @@ var clayConfig = [
   {type:'heading',defaultValue:'Home Assistant AI'},
   {type:'section',items:[
     {type:'heading',defaultValue:'Connection'},
+    {type:'toggle',messageKey:'USE_HA_PLUGIN',label:'Use Home Assistant plugin for text requests',defaultValue:useHaPlugin,
+      description:'Uses the separately installed Home Assistant Bridge plugin for tap-to-talk requests; native microphone streaming and watch spoken TTS still use the direct connection.'},
     {type:'input',messageKey:'HA_URL',label:'Home Assistant HTTPS URL',defaultValue:haUrl,
       description:'Public HTTPS root URL, no /api path',attributes:{type:'url',autocapitalize:'off',autocorrect:'off'}},
     {type:'input',messageKey:'HA_TOKEN',label:'Long-lived access token',
@@ -221,6 +225,10 @@ Pebble.addEventListener('webviewclosed',function(e) {
       return String(s[key].value);
     }
     return localStorage.getItem(name) || '';
+  }
+  if (s.USE_HA_PLUGIN) {
+    useHaPlugin=!!s.USE_HA_PLUGIN.value;
+    localStorage.setItem('USE_HA_PLUGIN',useHaPlugin?'true':'false');
   }
   haUrl = saved('HA_URL','HA_URL').trim().replace(/\/+$/,'');
   if (s.HA_TOKEN && s.HA_TOKEN.value) {
@@ -660,7 +668,45 @@ Pebble.addEventListener('appmessage',function(e) {
   var skipAudio=textOnly || !hasSpeaker || !enableTts || !haTts || d.VOLUME === 0;
   askHomeAssistant(d.TEXT,skipAudio,legacyTurn);
 });
+// Plugin calls are request-scoped. Live PCM streaming remains on the direct
+// PebbleKit JS -> Home Assistant Assist WebSocket until the plugin host offers
+// streaming actions. Do not copy the plugin's private token into localStorage.
+function askHomeAssistantViaPlugin(prompt,legacyTurn) {
+  var generation=++requestGeneration;
+  if(typeof Pebble.invokeAction!=='function') {
+    errText('Plugins require the Pebble mobile app plugin preview.');
+    if(legacyTurn)Pebble.sendAppMessage({COMMAND:'CONV_MODE_STOP'});
+    return;
+  }
+  Pebble.invokeAction({
+    plugin:HA_PLUGIN_UUID, action:'conversation',
+    args:{text:prompt,agent_id:haAgent||undefined,conversation_id:haConversationId||undefined}
+  }).then(function(result) {
+    if(generation!==requestGeneration)return;
+    if(!result||!result.ok)throw Error(result&&result.message||
+      'Home Assistant plugin not installed or permission not granted');
+    var data;
+    try{data=JSON.parse(result.text||'{}');}
+    catch(e){throw Error('Unexpected plugin conversation result');}
+    if(data.conversation_id) {
+      haConversationId=String(data.conversation_id);
+      localStorage.setItem('HA_CONVERSATION_ID',haConversationId);
+    }
+    var text=String(data.text||'No response from Home Assistant.');
+    lastAnswer=text;
+    Pebble.sendAppMessage({COMMAND:'TEXT_RESPONSE_NO_AUDIO',TEXT:text.substring(0,1900)},
+      function(){if(legacyTurn)Pebble.sendAppMessage({COMMAND:'CONV_RESUME'});});
+  }).catch(function(error) {
+    if(generation!==requestGeneration)return;
+    errText('HA plugin: '+String(error.message||error).substring(0,185));
+    if(legacyTurn)Pebble.sendAppMessage({COMMAND:'CONV_MODE_STOP'});
+  });
+}
 function askHomeAssistant(prompt,skipAudio,legacyTurn) {
+  if(useHaPlugin) {
+    askHomeAssistantViaPlugin(prompt,legacyTurn);
+    return;
+  }
   var generation=++requestGeneration;
   legacyConversationTurn=!!legacyTurn;
   sentenceQueue=[]; readyAudioQueue=[]; isFetchingTTS=false; isSendingBLE=false;
