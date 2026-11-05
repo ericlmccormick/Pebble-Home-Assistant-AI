@@ -364,6 +364,17 @@ static void update_text_layout() {
 // The phone delivers decoded PCM16 via audiostream events.
 static bool s_native_streaming = false;
 static bool s_native_waiting = false;
+static bool s_native_phone_accepted = false;
+static const char *native_stop_reason_name(MicStreamStopReason reason) {
+  switch (reason) {
+    case MicStreamStopReasonStopped: return "Stopped";
+    case MicStreamStopReasonFocusLost: return "FocusLost";
+    case MicStreamStopReasonInterrupted: return "Interrupted";
+    case MicStreamStopReasonPhone: return "Phone";
+    case MicStreamStopReasonError: return "Error";
+    default: return "Unknown";
+  }
+}
 static void native_send_command(const char *command) {
   DictionaryIterator *iter = NULL;
   if (app_message_outbox_begin(&iter) != APP_MSG_OK || !iter) return;
@@ -377,21 +388,39 @@ static void native_mic_stop(void) {
   }
 }
 static void native_mic_started(void *context) {
+  s_native_phone_accepted = true;
+  APP_LOG(APP_LOG_LEVEL_INFO, "Native mic: phone accepted audio stream");
   if (s_conversation_mode && !s_native_waiting) set_status("Listening...");
 }
 static void native_mic_stopped(MicStreamStopReason reason, void *context) {
+  APP_LOG(APP_LOG_LEVEL_ERROR, "Native mic stopped: reason=%s (%d), accepted=%d, waiting=%d",
+          native_stop_reason_name(reason), (int)reason,
+          (int)s_native_phone_accepted, (int)s_native_waiting);
   s_native_streaming = false;
-  if (s_conversation_mode && !s_native_waiting) {
-    s_native_waiting = true;
-    s_conversation_mode = false;
-    native_send_command("MIC_MODE_OFF");
-    set_ui_state(UI_STATE_IDLE);
-    set_status("Mic stream interrupted");
+  // Expected stop at the end of an utterance; don't cancel conversation.
+  if (s_native_waiting || !s_conversation_mode) return;
+  s_native_waiting = true;
+  s_conversation_mode = false;
+  native_send_command("MIC_MODE_OFF");
+  set_ui_state(UI_STATE_IDLE);
+  if (reason == MicStreamStopReasonPhone) {
+    set_status(s_native_phone_accepted ? "Phone ended mic stream" :
+                 "Phone refused mic; check permission");
+  } else if (reason == MicStreamStopReasonFocusLost) {
+    set_status("Mic stopped: app lost focus");
+  } else if (reason == MicStreamStopReasonInterrupted) {
+    set_status("Mic busy: system interruption");
+  } else if (reason == MicStreamStopReasonError) {
+    set_status("Mic stream system error");
+  } else {
+    set_status("Mic stopped unexpectedly");
   }
+  ha_haptic();
 }
 static void native_mic_start(void) {
   if (!s_conversation_mode || s_native_streaming) return;
   s_native_waiting = false;
+  s_native_phone_accepted = false;
   s_thinking_transcript[0] = 0;
   if (s_thinking_transcript_layer)
     text_layer_set_text(s_thinking_transcript_layer, s_thinking_transcript);
@@ -400,6 +429,7 @@ static void native_mic_start(void) {
     .started = native_mic_started, .stopped = native_mic_stopped
   }, NULL);
   s_native_streaming = result == MicStreamStartOk;
+  APP_LOG(APP_LOG_LEVEL_INFO, "Native mic start returned %d", (int)result);
   if (!s_native_streaming) {
     s_conversation_mode = false; s_native_waiting = true;
     native_send_command("MIC_MODE_OFF");
