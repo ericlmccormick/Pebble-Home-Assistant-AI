@@ -303,24 +303,25 @@ static void update_text_layout() {
 
     static int16_t s_out_buf[PLAYBACK_PCM_SAMPLES]; 
 
-    if (s_buffer_count >= PLAYBACK_ADPCM_BYTES) { 
-      for (int i = 0; i < PLAYBACK_ADPCM_BYTES; i++) { 
-        uint8_t adpcm_byte = s_ring_buffer[s_head]; 
-        s_head = (s_head + 1) % RING_BUFFER_SIZE; 
-        s_buffer_count--;                       
+    // Audio often ends with fewer than 800 ADPCM bytes. Decode the
+    // remaining bytes and pad the rest of this 200ms speaker frame with
+    // silence. Otherwise s_buffer_count never reaches zero and continuous
+    // conversation never resumes after Home Assistant finishes talking.
+    const uint16_t bytes_to_decode = s_buffer_count < PLAYBACK_ADPCM_BYTES ?
+                                      s_buffer_count : PLAYBACK_ADPCM_BYTES;
+    memset(s_out_buf, 0, sizeof(s_out_buf));
+    for (uint16_t i = 0; i < bytes_to_decode; i++) {
+      uint8_t adpcm_byte = s_ring_buffer[s_head];
+      s_head = (s_head + 1) % RING_BUFFER_SIZE;
+      s_buffer_count--;
 
-        uint8_t nibble1 = (adpcm_byte >> 4) & 0x0F; 
-        uint8_t nibble2 = adpcm_byte & 0x0F;        
-
-        s_out_buf[i * 2] = decode_adpcm_to_16bit(nibble1);     
-        s_out_buf[(i * 2) + 1] = decode_adpcm_to_16bit(nibble2); 
-      }
-      speaker_stream_write((uint8_t*)s_out_buf, sizeof(s_out_buf)); 
-    } else {
-      memset(s_out_buf, 0, sizeof(s_out_buf));
-      speaker_stream_write((uint8_t*)s_out_buf, sizeof(s_out_buf)); 
-      schedule_close_timer();                   
+      uint8_t nibble1 = (adpcm_byte >> 4) & 0x0F;
+      uint8_t nibble2 = adpcm_byte & 0x0F;
+      s_out_buf[i * 2] = decode_adpcm_to_16bit(nibble1);
+      s_out_buf[(i * 2) + 1] = decode_adpcm_to_16bit(nibble2);
     }
+    speaker_stream_write((uint8_t*)s_out_buf, sizeof(s_out_buf));
+    if (s_buffer_count == 0) schedule_close_timer();
     s_playback_timer = app_timer_register(PLAYBACK_INTERVAL_MS, playback_timer_callback, NULL);
   }
 
