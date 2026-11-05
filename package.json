@@ -77,8 +77,16 @@
     },
     "manifestVersion": 2,
     "usesPermissions": [
-      "WatchMicrophone"
+      "WatchMicrophone",
+      {
+        "name": "HomeConverse",
+        "plugin": "a74370b6-929c-4ec0-b7ee-2fc6fca8db57"
+      },
+      {
+        "name": "InvokeAction",
+        "plugin": "a74370b6-929c-4ec0-b7ee-2fc6fca8db57"
+      }
     ]
   },
-  "version": "0.1.5"
+  "version": "0.2.0"
 }
