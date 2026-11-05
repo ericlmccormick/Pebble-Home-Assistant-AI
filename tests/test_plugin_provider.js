@@ -3,6 +3,14 @@ const code=fs.readFileSync('src/pkjs/index.js','utf8');
 const pkg=JSON.parse(fs.readFileSync('package.json','utf8'));
 const plugin=JSON.parse(fs.readFileSync('home-assistant-plugin/package.json','utf8'));
 const uuid=plugin.pebble.uuid;
+// Connection selector must be the first settings section, ahead of built-in
+// credentials, and retain a clear explanation of voice-mode limitations.
+const firstSection=code.slice(code.indexOf("var clayConfig = ["),code.indexOf("function configField("));
+assert(firstSection.indexOf("messageKey:'USE_HA_PLUGIN'") > -1);
+assert(firstSection.indexOf("messageKey:'USE_HA_PLUGIN'") < firstSection.indexOf("messageKey:'HA_URL'"));
+assert(firstSection.includes("label:'Use Home Assistant plugin'"));
+assert(firstSection.includes('Continuous voice streaming and spoken TTS still require the built-in connection.'));
+
 assert(pkg.pebble.usesPermissions.some(p=>p.plugin===uuid&&p.name==='HomeConverse'));
 assert(pkg.pebble.usesPermissions.some(p=>p.plugin===uuid&&p.name==='InvokeAction'));
 const sent=[],requests=[],store=new Map([['USE_HA_PLUGIN','true'],['ENABLE_TTS','false']]);
