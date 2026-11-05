@@ -16,13 +16,32 @@ async function api(path,method,body) {
   var url=baseUrl(),token=await Pebble.secureStorage.getItem(TOKEN_KEY);
   if(!url||!token)return failure('AUTH_REQUIRED','Configure the Home Assistant plugin.');
   try {
+    var headers={'Authorization':'Bearer '+token,'Accept':'application/json'};
+    // A GET request has no JSON body; do not advertise a Content-Type.
+    // HA and reverse proxies can apply stricter request validation to GETs.
+    if(typeof body!=='undefined')headers['Content-Type']='application/json';
     var res=await fetch(url+path,{
-      method:method||'GET',
-      headers:{'Authorization':'Bearer '+token,'Content-Type':'application/json'},
+      method:method||'GET',headers:headers,
       body:typeof body==='undefined'?undefined:JSON.stringify(body)
     });
-    if(!res.ok)return failure(res.status===401||res.status===403?'AUTH_REQUIRED':'PLUGIN_UNAVAILABLE',
-      'Home Assistant HTTP '+res.status);
+    if(!res.ok){
+      var hint='';
+      if(res.status===400){
+        // Read the response for recognizable HA/proxy errors. Never display
+        // arbitrary HTML, authentication data, or sensitive server details.
+        try {
+          var raw=String(await res.text()).toLowerCase();
+          if(raw.indexOf('reverse proxy')!==-1 || raw.indexOf('forwarded')!==-1)
+            hint=' (reverse proxy configuration rejected the request)';
+          else if(raw.indexOf('invalid host')!==-1)
+            hint=' (server rejected the host name)';
+          else if(raw.indexOf('bad request')!==-1)
+            hint=' (bad request; check Home Assistant logs)';
+        }catch(e){}
+      }
+      return failure(res.status===401||res.status===403?'AUTH_REQUIRED':'PLUGIN_UNAVAILABLE',
+        'Home Assistant HTTP '+res.status+hint);
+    }
     var contentType=res.headers&&res.headers.get&&res.headers.get('content-type')||'';
     var data=contentType.indexOf('json')>=0?await res.json():await res.text();
     return {ok:true,data:data};
@@ -146,9 +165,17 @@ Pebble.registerConfigHandler(async function(message,respond){
       }catch(e){respond({ok:false,error:e.message});return;}
     }
     case 'test':{
+      // Check an inexpensive API endpoint first, then the authenticated
+      // configuration endpoint to pinpoint where a 400 originates.
+      var ping=await api('/api/');
+      if(!ping.ok){
+        respond({ok:false,error:ping.message,stage:'/api/'});
+        return;
+      }
       var result=await api('/api/config');
       respond(result.ok?{ok:true,name:result.data&&result.data.location_name||'Home Assistant'}:
-        {ok:false,error:result.message});return;
+        {ok:false,error:result.message,stage:'/api/config'});
+      return;
     }
     case 'forget':
       await Pebble.secureStorage.removeItem(TOKEN_KEY);
