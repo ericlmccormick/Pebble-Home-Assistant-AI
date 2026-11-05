@@ -6,6 +6,7 @@ const source=fs.readFileSync('src/pkjs/index.js','utf8');
 const storage=new Map([
   ['HA_URL','https://example.test'],
   ['HA_TOKEN','test-token'],
+  ['USE_HA_PLUGIN','false'],
   ['HA_AGENT','conversation.google_ai'],
   ['HA_TTS','tts.home_assistant_cloud']
 ]);
