@@ -52,6 +52,12 @@ jobs:
           assert 'dictation_session_stop(s_dictation_session)' in c
           assert 'Conversation: dictation' in c
           assert 'Conversation\\nDictation mode' in c
+          # Final TTS audio packets can be smaller than one speaker frame;
+          # they must be consumed or the buffer never empties to resume listening.
+          assert 'const uint16_t bytes_to_decode = s_buffer_count < PLAYBACK_ADPCM_BYTES' in c
+          assert 'i < bytes_to_decode' in c
+          assert 'if (s_buffer_count == 0) schedule_close_timer();' in c
+          assert 's_buffer_count >= PLAYBACK_ADPCM_BYTES' not in c
           assert 'mic_stream_to_phone_start' in c
           assert 's_native_phone_accepted' in c
           for stop_reason in ('MicStreamStopReasonPhone','MicStreamStopReasonFocusLost',
