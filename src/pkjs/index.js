@@ -1086,7 +1086,7 @@ function startBLESendLoop() {
         { 'COMMAND': 'AUDIO_CHUNK', 'CHUNK': chunk },
         function success() {
           failureCount=0;
-          setTimeout(sendNextChunk, useHaPlugin?90:60);
+          setTimeout(sendNextChunk, useHaPlugin?80:60);
         },
         function failure() {
           cursor=previousCursor;
