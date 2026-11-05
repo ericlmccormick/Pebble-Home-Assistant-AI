@@ -9,8 +9,14 @@ var haConversationId = localStorage.getItem('HA_CONVERSATION_ID') || '';
 var useHaPlugin = localStorage.getItem('USE_HA_PLUGIN') === 'true';
 var HA_PLUGIN_UUID = 'a74370b6-929c-4ec0-b7ee-2fc6fca8db57';
 var enableTts = localStorage.getItem('ENABLE_TTS') !== 'false';
+// One-time migration: old Text-only setting overrode Speak responses.
+// Preserve that effective preference before dropping the redundant key.
+if (localStorage.getItem('TEXT_ONLY') === 'true') {
+  enableTts = false;
+  localStorage.setItem('ENABLE_TTS','false');
+}
+localStorage.removeItem('TEXT_ONLY');
 var autoSend = localStorage.getItem('AUTO_SEND') !== 'false';
-var textOnly = localStorage.getItem('TEXT_ONLY') === 'true';
 var hapticLevel = localStorage.getItem('HAPTIC_LEVEL') || 'medium';
 var hapticValues = {off:0,low:1,medium:2,high:3};
 var fontSize = parseInt(localStorage.getItem('FONT_SIZE') || '24', 10);
@@ -63,9 +69,7 @@ var clayConfig = [
     {type:'input',messageKey:'HA_TTS',label:'Text-to-speech engine',defaultValue:haTts,
       description:'Speech playback entity, e.g. tts.home_assistant_cloud. Blank disables TTS.'},
     {type:'toggle',messageKey:'ENABLE_TTS',label:'Speak responses on watch',defaultValue:enableTts,
-      description:'Only on speaker-equipped Pebbles. Always displays text.'},
-    {type:'toggle',messageKey:'TEXT_ONLY',label:'Text-only responses',defaultValue:textOnly,
-      description:'Never play spoken responses, even if TTS is configured.'},
+      description:'On: display text and play spoken responses when TTS is configured. Off: text only.'},
     {type:'toggle',messageKey:'AUTO_SEND',label:'Send speech without confirmation',defaultValue:autoSend,
       description:'Send recognized words automatically; show them while waiting. Native speech error dialogs remain enabled.'},
     {type:'toggle',messageKey:'RESET_CHAT',label:'Start new conversation',defaultValue:false,
@@ -252,10 +256,6 @@ Pebble.addEventListener('webviewclosed',function(e) {
   if (s.ENABLE_TTS) {
     enableTts = !!s.ENABLE_TTS.value;
     localStorage.setItem('ENABLE_TTS',enableTts?'true':'false');
-  }
-  if (s.TEXT_ONLY) {
-    textOnly=!!s.TEXT_ONLY.value;
-    localStorage.setItem('TEXT_ONLY',textOnly?'true':'false');
   }
   if (s.AUTO_SEND) {
     autoSend=!!s.AUTO_SEND.value;
@@ -630,7 +630,7 @@ Pebble.addEventListener('audiostreamstop',function() {
   }
 });
 function conversationShowReply(reply,gen) {
-  var canSpeak=hasSpeaker && enableTts && !textOnly && haTts;
+  var canSpeak=hasSpeaker && enableTts && haTts;
   var cmd=canSpeak?'TEXT_RESPONSE_8_16':'TEXT_RESPONSE_NO_AUDIO';
   lastAnswer=reply;
   Pebble.sendAppMessage({COMMAND:cmd,TEXT:reply.substring(0,1900)},
@@ -671,7 +671,7 @@ Pebble.addEventListener('appmessage',function(e) {
     if(legacyTurn)Pebble.sendAppMessage({COMMAND:'CONV_MODE_STOP'});
     return;
   }
-  var skipAudio=textOnly || !hasSpeaker || !enableTts || !haTts || d.VOLUME === 0;
+  var skipAudio=!hasSpeaker || !enableTts || !haTts || d.VOLUME === 0;
   askHomeAssistant(d.TEXT,skipAudio,legacyTurn);
 });
 // Plugin calls are request-scoped. Live PCM streaming remains on the direct
