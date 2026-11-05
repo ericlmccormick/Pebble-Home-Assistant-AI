@@ -731,13 +731,14 @@ function askHomeAssistantViaPlugin(prompt,skipAudio,legacyTurn) {
     }
     var answer=String(data.text||'No response from Home Assistant.');
     lastAnswer=answer;
-    Pebble.sendAppMessage({COMMAND:skipAudio?'TEXT_RESPONSE_NO_AUDIO':'TEXT_RESPONSE_8_16',
+    Pebble.sendAppMessage({COMMAND:skipAudio?'TEXT_RESPONSE_NO_AUDIO':'TEXT_RESPONSE_16_16',
       TEXT:answer.substring(0,1900)},function(){
       if(generation!==requestGeneration)return;
       if(skipAudio){if(legacyTurn)Pebble.sendAppMessage({COMMAND:'CONV_RESUME'});return;}
       legacyConversationTurn=!!legacyTurn;
       sentenceQueue=[];readyAudioQueue=[];isFetchingTTS=false;isSendingBLE=false;
       js_adpcm_valpred=0;js_adpcm_index=0;
+      pluginImaPredictor=0;pluginImaIndex=0;
       if(legacyTurn)conversationAudioFinalPending=true;
       sentenceQueue=(answer.match(/[^.!?]+[.!?]*/g)||[answer])
         .map(function(s){return s.trim();}).filter(function(s){return !!s;});
@@ -1085,7 +1086,7 @@ function startBLESendLoop() {
         { 'COMMAND': 'AUDIO_CHUNK', 'CHUNK': chunk },
         function success() {
           failureCount=0;
-          setTimeout(sendNextChunk, 60);
+          setTimeout(sendNextChunk, useHaPlugin?90:60);
         },
         function failure() {
           cursor=previousCursor;
