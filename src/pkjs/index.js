@@ -39,10 +39,15 @@ var stepTable = [
 var indexTable = [-1,-1,-1,-1,2,4,6,8,-1,-1,-1,-1,2,4,6,8];
 var clayConfig = [
   {type:'heading',defaultValue:'Home Assistant AI'},
+  // Keep the connection provider at the top where it is immediately visible.
+  // OFF = built-in Home Assistant connection, ON = Home Assistant Bridge plugin.
   {type:'section',items:[
-    {type:'heading',defaultValue:'Connection'},
-    {type:'toggle',messageKey:'USE_HA_PLUGIN',label:'Use Home Assistant plugin for text requests',defaultValue:useHaPlugin,
-      description:'Uses the separately installed Home Assistant Bridge plugin for tap-to-talk requests; native microphone streaming and watch spoken TTS still use the direct connection.'},
+    {type:'heading',defaultValue:'Connection Mode'},
+    {type:'toggle',messageKey:'USE_HA_PLUGIN',label:'Use Home Assistant plugin',defaultValue:useHaPlugin,
+      description:'Off: built-in connection. On: Home Assistant Bridge handles tap-to-talk text conversations without sharing its token. Continuous voice streaming and spoken TTS still require the built-in connection.'}
+  ]},
+  {type:'section',items:[
+    {type:'heading',defaultValue:'Built-in Connection (continuous voice)'},
     {type:'input',messageKey:'HA_URL',label:'Home Assistant HTTPS URL',defaultValue:haUrl,
       description:'Public HTTPS root URL, no /api path',attributes:{type:'url',autocapitalize:'off',autocorrect:'off'}},
     {type:'input',messageKey:'HA_TOKEN',label:'Long-lived access token',
