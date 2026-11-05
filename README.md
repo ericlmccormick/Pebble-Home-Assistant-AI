@@ -138,3 +138,11 @@ Hardware dictation and audio playback still require actual watch testing.
 10. Run regression checks and perform at least one actual CloudPebble build and device test before publication.
 
 References: https://developers.home-assistant.io/docs/intent_conversation_api/ and https://www.home-assistant.io/integrations/tts/
+
+
+## Home Assistant Bridge plugin
+
+The shared Home Assistant plugin now has its own repository:
+**https://github.com/ericlmccormick/Pebble-HA-plug-in**.
+
+Install the plugin-only PBW from that repository's **Build Home Assistant Plugin** GitHub Actions workflow, then configure its Home Assistant URL and token through the Pebble mobile app. The plugin UUID is unchanged (`a74370b6-929c-4ec0-b7ee-2fc6fca8db57`), so the optional provider toggle in this watchapp continues to reference the same plugin. Continuous microphone streaming and spoken TTS still use the built-in Home Assistant connection.
