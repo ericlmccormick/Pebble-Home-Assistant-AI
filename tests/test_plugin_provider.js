@@ -19,15 +19,49 @@ assert(code.includes("var useHaPlugin = localStorage.getItem('USE_HA_PLUGIN') !=
 assert(pkg.pebble.usesPermissions.some(p=>p.plugin===uuid&&p.name==='HomeConverse'));
 assert(pkg.pebble.usesPermissions.some(p=>p.plugin===uuid&&p.name==='InvokeAction'));
 const sent=[],requests=[],store=new Map([['ENABLE_TTS','false']]);
+let customClay=null;
+const MockClay=function(config,custom){customClay=custom;this.generateUrl=()=>'';};
 const Pebble={listeners:{},getActiveWatchInfo:()=>({platform:'emery'}),addEventListener(n,fn){this.listeners[n]=fn;},
   sendAppMessage(p,ok){sent.push(p);if(ok)ok();},openURL(){},
   invokeAction:async req=>{requests.push(req);return {ok:true,text:JSON.stringify({text:'Lights are off.',conversation_id:'new-id'})};}};
-const context={console,require:n=>function(){this.generateUrl=()=>'';},Pebble,
+const context={console,require:n=>MockClay,Pebble,
   localStorage:{getItem:k=>store.has(k)?store.get(k):null,
     setItem:(k,v)=>store.set(k,String(v)),removeItem:k=>store.delete(k)},
   Uint8Array,ArrayBuffer,DataView,Date,Promise,JSON,Math,String,Error,Array,
   setTimeout:()=>1,clearTimeout:()=>{},fetch:()=>Promise.reject(Error('No direct network'))};
 vm.createContext(context);vm.runInContext(code,context);
+// Exercise actual Clay show/hide callbacks rather than checking text alone.
+assert.strictEqual(typeof customClay,'function');
+const fieldNames=['HA_URL','HA_TOKEN','HA_PIPELINE','HA_AGENT','HA_TTS'];
+const visibility={};
+let enabled=false,onBuild=null,onToggle=null;
+function item(key) {
+  return {get:()=>enabled,
+    on:(name,cb)=>{assert.strictEqual(name,'change');onToggle=cb;},
+    show:()=>{visibility[key]=true;},
+    hide:()=>{visibility[key]=false;}};
+}
+const items={};
+fieldNames.forEach(k=>items[k]=item(k));
+items.USE_BUILTIN_CONNECTION=item('USE_BUILTIN_CONNECTION');
+items.builtin_connection_heading=item('builtin_connection_heading');
+const clayPage={
+  EVENTS:{AFTER_BUILD:'after_build'},
+  on:(ev,cb)=>{assert.strictEqual(ev,'after_build');onBuild=cb;},
+  getItemByMessageKey:key=>items[key],
+  getItemById:key=>items[key]
+};
+customClay.call(clayPage);
+assert(onBuild);
+onBuild();
+for(const key of fieldNames.concat('builtin_connection_heading'))
+  assert.strictEqual(visibility[key],false,'Plugin default should hide '+key);
+enabled=true;onToggle();
+for(const key of fieldNames.concat('builtin_connection_heading'))
+  assert.strictEqual(visibility[key],true,'Built-in toggle should show '+key);
+enabled=false;onToggle();
+for(const key of fieldNames.concat('builtin_connection_heading'))
+  assert.strictEqual(visibility[key],false,'Switching back should hide '+key);
 Pebble.listeners.appmessage({payload:{COMMAND:'DICTATION',TEXT:'Turn off the kitchen lights'}});
 setImmediate(()=>{
   try {
