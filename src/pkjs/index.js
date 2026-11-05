@@ -398,7 +398,7 @@ function conversationStart() {
   conversationTimeout=setTimeout(function(){
     if(gen===conversationGeneration && !conversationReceivedText)
       conversationFailure('HA voice request timed out',gen);
-  },35000);
+  },120000);
   ws.onopen=function(){};
   ws.onclose=function() {
     if(gen===conversationGeneration && !conversationReceivedText)
@@ -466,8 +466,10 @@ var nativeSpeechStarted=false, nativePreRoll=[], nativePreRollBytes=0;
 var nativeVoicedMs=0, nativeSilenceMs=0, nativeTotalMs=0;
 var nativeStopTimer=null;
 var NATIVE_PCM_BYTES_PER_SECOND=32000;
-var NATIVE_END_SILENCE_MS=2500;
-var NATIVE_MAX_SPEECH_MS=60000;
+// Allow pauses while dictating a long request; the microphone stays live until the user finishes.
+var NATIVE_END_SILENCE_MS=5000;
+var NATIVE_MAX_SPEECH_MS=90000;
+var NATIVE_MIN_UTTERANCE_MS=1200;
 function nativeResetTurn() {
   nativeMicActive=false;
   nativeMicWaiting=false;
@@ -573,7 +575,10 @@ Pebble.addEventListener('audiostream',function(e) {
   nativeTotalMs+=ms;
   if(voice)nativeSilenceMs=0;
   else nativeSilenceMs+=ms;
-  if(nativeSilenceMs>=NATIVE_END_SILENCE_MS ||
+  // A short noise burst should not create a complete 3-second "utterance".
+  // Avoid ending legitimate requests at natural pauses between clauses.
+  if((nativeTotalMs>=NATIVE_MIN_UTTERANCE_MS &&
+      nativeSilenceMs>=NATIVE_END_SILENCE_MS) ||
      nativeTotalMs>=NATIVE_MAX_SPEECH_MS) {
     console.log('Native mic: end of turn after '+Math.round(nativeTotalMs)+
       'ms speaking window; trailing silence '+Math.round(nativeSilenceMs)+'ms');
