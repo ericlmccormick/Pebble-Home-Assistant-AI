@@ -10,7 +10,7 @@ const firstSection=code.slice(code.indexOf("var clayConfig = ["),code.indexOf("f
 assert(firstSection.indexOf("messageKey:'USE_BUILTIN_CONNECTION'") > -1);
 assert(firstSection.indexOf("messageKey:'USE_BUILTIN_CONNECTION'") < firstSection.indexOf("messageKey:'HA_URL'"));
 assert(firstSection.includes("label:'Use built-in connection'"));
-assert(firstSection.includes('Continuous voice streaming and spoken TTS currently require the built-in connection.'));
+assert(firstSection.includes('plugin handles conversations and speech generation'));
 assert(code.includes('function connectionModeClay()'));
 assert(code.includes("toggle.on('change',updateVisibility)"));
 assert(code.includes("['HA_URL','HA_TOKEN','HA_PIPELINE','HA_AGENT','HA_TTS']"));
@@ -70,6 +70,9 @@ setImmediate(()=>{
     assert.strictEqual(requests[0].action,'conversation');
     assert.strictEqual(requests[0].args.text,'Turn off the kitchen lights');
     assert(sent.some(x=>x.COMMAND==='TEXT_RESPONSE_NO_AUDIO'&&x.TEXT==='Lights are off.'));
+    assert(code.includes("pluginAction('tts_prepare',{text:sentence})"));
+    assert(code.includes("pluginAction('tts_chunk',{session_id:session,offset:offset})"));
+    assert(code.includes("startPluginTTSFetchLoop(generation)"));
     assert.strictEqual(store.get('HA_CONVERSATION_ID'),'new-id');
     assert.strictEqual(store.get('HA_TOKEN'),undefined,'Plugin token must not be stored by watchapp');
     Pebble.listeners.webviewclosed({response:encodeURIComponent(JSON.stringify({USE_BUILTIN_CONNECTION:{value:true}}))});
