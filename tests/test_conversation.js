@@ -50,6 +50,14 @@ assert(!sent.some(p=>p.COMMAND==='MIC_TURN_END'),
   'quiet room must not stop continuous listening');
 for(let i=0;i<5;i++)event('audiostream',{data:pcm(1000)});
 assert(opened,'speech should start HA WebSocket');
+// Regression: 24 seconds of idle listening before speech must NOT consume
+// the spoken-turn recording budget and immediately cut the speaker off.
+for(let i=0;i<90;i++)event('audiostream',{data:pcm(0)});
+assert(!sent.some(p=>p.COMMAND==='MIC_TURN_END'),
+  'a natural 1.8 second pause after speech must not end the utterance');
+for(let i=0;i<10;i++)event('audiostream',{data:pcm(1000)});
+assert(!sent.some(p=>p.COMMAND==='MIC_TURN_END'),
+  'resuming speech must reset the end-of-speech silence timer');
 assert.strictEqual(opened.url,'wss://test.example/api/websocket');
 function msg(object){opened.onmessage({data:JSON.stringify(object)});}
 msg({type:'auth_required'});
@@ -67,8 +75,12 @@ assert(opened.sent.length>2,'native audio forwarded');
 const packet=new Uint8Array(opened.sent[2]);
 assert.equal(packet[0],7);
 assert.equal(packet.length,641);
-for(let i=0;i<75;i++)event('audiostream',{data:pcm(0)});
-assert(sent.some(p=>p.COMMAND==='MIC_TURN_END'),'silence should end utterance');
+for(let i=0;i<120;i++)event('audiostream',{data:pcm(0)});
+assert(!sent.some(p=>p.COMMAND==='MIC_TURN_END'),
+  '2.4 seconds of silence should not end the utterance');
+for(let i=0;i<6;i++)event('audiostream',{data:pcm(0)});
+assert(sent.some(p=>p.COMMAND==='MIC_TURN_END'),
+  '2.5 seconds of trailing silence should end the utterance');
 event('audiostreamstop',{});
 assert.deepStrictEqual(Array.from(new Uint8Array(opened.sent[opened.sent.length-1])),[7],
   'end of PCM is single handler byte');
