@@ -5,6 +5,14 @@ const path=require('path');
 const source=fs.readFileSync(path.join(__dirname,'../src/pkjs/index.js'),'utf8');
 assert(source.includes("Promise.all(pending)"),'Bridge WAV chunks must be fetched in bounded parallel batches');
 assert(source.includes('meta.first_chunk'),'Consume first WAV chunk inline');
+assert(source.includes('pluginStreamWav(sentence,gen,function(audio,last)'),
+  'Plugin TTS must stream verified chunks instead of full WAV');
+assert(source.includes('readyAudioQueue.push({bytes:audio,endSentence:last})'),
+  'Producer must mark only the final audio segment as sentence end');
+assert(source.includes('if(!endSentence){'),
+  'BLE sender must not insert a sentence-end marker at each WAV chunk');
+assert(source.includes('MAX_PENDING_STREAM_SEGMENTS=8'),
+  'Progressive producer must use bounded in-memory backpressure');
 assert(source.includes('return receiveBatch(initialOffset)'),
   'Never re-request already inlined chunk');
 const start=source.indexOf('var bleFlowGeneration=');
@@ -37,6 +45,8 @@ assert(source.includes('readyAudioQueue.length>=MAX_READY_AUDIO_SENTENCES'),
 assert(source.includes('if(useHaPlugin)startPluginTTSFetchLoop(requestGeneration);'),
   'Consumer must wake the plugin producer as space frees');
 const watch=fs.readFileSync(path.join(__dirname,'../src/c/main.c'),'utf8');
+assert(watch.includes('stop_audio();\n        s_ignore_audio = true;'),
+  'Corrupted progressive audio must stop watch playback on failure');
 assert(watch.includes('#define START_BUFFER_THRESHOLD 2100'),
   'Start playback after three 700-byte BLE packets');
 assert(watch.includes('app_timer_register(1, playback_timer_callback, NULL)'),
