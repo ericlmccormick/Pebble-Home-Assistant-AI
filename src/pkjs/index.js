@@ -738,7 +738,6 @@ function askHomeAssistantViaPlugin(prompt,skipAudio,legacyTurn) {
       legacyConversationTurn=!!legacyTurn;
       sentenceQueue=[];readyAudioQueue=[];isFetchingTTS=false;isSendingBLE=false;
       js_adpcm_valpred=0;js_adpcm_index=0;
-      pluginImaPredictor=0;pluginImaIndex=0;
       if(legacyTurn)conversationAudioFinalPending=true;
       sentenceQueue=(answer.match(/[^.!?]+[.!?]*/g)||[answer])
         .map(function(s){return s.trim();}).filter(function(s){return !!s;});
@@ -956,32 +955,31 @@ function pluginResult(result,context){
   try{return JSON.parse(result.text||'{}');}
   catch(e){throw Error(context+': invalid plugin response');}
 }
-// Plugin returns antialiased 8kHz IMA ADPCM ready for Gemini-compatible watch playback; do not encode twice.
-var pluginImaPredictor=0,pluginImaIndex=0;
-function pluginFetchAdpcm(sentence,gen){
-  var session=null,nextPredictor=0,nextIndex=0;
-  return pluginAction('tts_prepare',{text:sentence,
-    predictor:pluginImaPredictor,index:pluginImaIndex}).then(function(result){
+// Match Gemini's default audio pipeline exactly: plugin supplies WAV
+// containing signed 8kHz mono PCM16; the phone low-pass filters and encodes
+// 4-bit IMA ADPCM, then sends 700-byte packets to the watch.
+function pluginFetchWav(sentence,gen){
+  var session=null;
+  return pluginAction('tts_prepare',{text:sentence}).then(function(result){
     var meta=pluginResult(result,'TTS preparation');
-    if(meta.format!=='ima_adpcm4'||meta.sample_rate!==8000||
-       meta.channels!==1||!Number.isInteger(meta.length)||meta.length<1||
-       meta.length>1500000||!Number.isInteger(meta.next_predictor)||
-       !Number.isInteger(meta.next_index))
-      throw Error('Unsupported plugin TTS format');
-    nextPredictor=meta.next_predictor;nextIndex=meta.next_index;
-    session=String(meta.session_id||'');
-    if(!session)throw Error('Missing TTS session');
+    if(meta.format!=='pcm_s16le_wav'||meta.sample_rate!==8000||
+       meta.channels!==1||meta.bits_per_sample!==16)
+      throw Error('Bridge audio version mismatch: install v0.2.7 PCM WAV plugin');
+    if(!meta.session_id||!Number.isInteger(meta.length)||meta.length<44||
+       meta.length>1500000)
+      throw Error('Invalid plugin TTS session');
+    session=String(meta.session_id);
     var length=meta.length,step=meta.chunk_bytes||6000;
     if(step!==6000)throw Error('Unsupported TTS chunk size');
     var data=new Uint8Array(length);
     function receive(offset){
       if(gen!==requestGeneration)throw Error('TTS cancelled');
-      if(offset>=length)return data;
+      if(offset>=length)return data.buffer;
       return pluginAction('tts_chunk',{session_id:session,offset:offset}).then(function(reply){
         var part=pluginResult(reply,'TTS chunk');
         var bytes=pluginDecodeBase64(String(part.audio||''));
         if(part.offset!==offset||bytes.length!==Math.min(step,length-offset))
-          throw Error('Invalid plugin ADPCM chunk');
+          throw Error('Invalid plugin TTS audio chunk');
         data.set(bytes,offset);
         return receive(offset+bytes.length);
       });
@@ -989,8 +987,7 @@ function pluginFetchAdpcm(sentence,gen){
     return receive(0);
   }).then(function(audio){
     if(session)pluginAction('tts_release',{session_id:session}).catch(function(){});
-    pluginImaPredictor=nextPredictor;pluginImaIndex=nextIndex;
-    return Array.from(audio);
+    return wavToPcm(audio);
   },function(error){
     if(session)pluginAction('tts_release',{session_id:session}).catch(function(){});
     throw error;
@@ -1002,9 +999,9 @@ function startPluginTTSFetchLoop(gen){
   }
   isFetchingTTS=true;
   var sentence=sentenceQueue.shift();
-  pluginFetchAdpcm(sentence,gen).then(function(adpcm){
+  pluginFetchWav(sentence,gen).then(function(pcm){
     if(gen!==requestGeneration)return;
-    readyAudioQueue.push(adpcm);
+    readyAudioQueue.push(encodeADPCM(lowPassFilter(pcm)));
     isFetchingTTS=false;
     if(!isSendingBLE)startBLESendLoop();
     startPluginTTSFetchLoop(gen);
