@@ -1,0 +1,73 @@
+name: Build and publish direct PBW
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'package.json'
+      - 'src/**'
+      - 'resources/**'
+      - 'images/**'
+      - 'wscript'
+      - '.github/workflows/direct-pbw.yml'
+permissions:
+  contents: write
+concurrency:
+  group: direct-pbw-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: astral-sh/setup-uv@v6
+      - name: Install Pebble build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libsdl2-2.0-0 libglib2.0-0 libpixman-1-0 zlib1g libsndio7.0
+      - name: Check manifest and PebbleKit JS
+        run: |
+          node -e "const p=require('./package.json');if(p.pebble.projectType!=='native'||p.pebble.sdkVersion!=='3')process.exit(1)"
+          node --check src/pkjs/index.js
+      - name: Install firmware-compatible Pebble SDK
+        run: |
+          uv tool install pebble-tool
+          pebble sdk install 4.44
+          pebble sdk activate 4.44
+      - name: Build Pebble app
+        run: pebble build
+      - name: Prepare installable PBW
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          files=(build/*.pbw)
+          if [[ ${#files[@]} -ne 1 ]]; then
+            echo "Expected one built .pbw, found ${#files[@]}" >&2
+            exit 1
+          fi
+          mkdir -p direct-download
+          cp "${files[0]}" direct-download/home-assistant-ai.pbw
+      - uses: actions/upload-artifact@v4
+        with:
+          name: home-assistant-ai-build
+          path: direct-download/home-assistant-ai.pbw
+          if-no-files-found: error
+      - name: Publish directly installable PBW to GitHub Releases
+        if: github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          if ! gh release view dev-latest >/dev/null 2>&1; then
+            gh release create dev-latest --target "$GITHUB_SHA" \
+              --title "Latest development PBW" --prerelease \
+              --notes "Rolling main-branch development build. Install the .pbw directly; GitHub Actions artifacts are ZIP archives."
+          fi
+          gh release upload dev-latest direct-download/home-assistant-ai.pbw --clobber
+          echo "### Direct PBW download" >> "$GITHUB_STEP_SUMMARY"
+          echo "[Download home-assistant-ai.pbw](https://github.com/$GITHUB_REPOSITORY/releases/download/dev-latest/home-assistant-ai.pbw)" >> "$GITHUB_STEP_SUMMARY"
