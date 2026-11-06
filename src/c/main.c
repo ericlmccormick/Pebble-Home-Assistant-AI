@@ -675,7 +675,10 @@ static void init() {
   #endif
   
   app_message_register_inbox_received(inbox_received_callback);
-  
+  // Open AppMessage before dictation or audio telemetry can use its outbox.
+  // The 12 KiB inbox accepts the 700-byte ADPCM packets from the phone.
+  app_message_open(12000, 1024);
+
   s_main_window = window_create();              
   window_set_window_handlers(s_main_window, (WindowHandlers) {
     .load = main_window_load, .unload = main_window_unload 
