@@ -4,6 +4,9 @@ const vm=require('vm');
 const path=require('path');
 const source=fs.readFileSync(path.join(__dirname,'../src/pkjs/index.js'),'utf8');
 assert(source.includes("Promise.all(pending)"),'Bridge WAV chunks must be fetched in bounded parallel batches');
+assert(source.includes('meta.first_chunk'),'Consume first WAV chunk inline');
+assert(source.includes('return receiveBatch(initialOffset)'),
+  'Never re-request already inlined chunk');
 const start=source.indexOf('var bleFlowGeneration=');
 const end=source.indexOf('function startBLESendLoop()',start);
 assert(start>=0&&end>start,'Bluetooth pacing helper missing');
@@ -23,6 +26,8 @@ while(transmitted<80000){
 }
 assert(peak<=7500,'Send-ahead estimation must not overfill its safety limit');
 assert(firstPlayback<400,'Initial packets should not incur a 175ms fixed delay');
+assert(source.includes('BLE_PREBUFFER_BYTES=2100'),
+  'Phone flow estimator must match the watch startup threshold');
 assert(transmitted===80000,'Full long response must be delivered');
 // The Gemini pipeline overlaps sentence generation with transport. This
 // tests both the producer's bounded queue and the watch's ping-pong frames.
@@ -32,6 +37,10 @@ assert(source.includes('readyAudioQueue.length>=MAX_READY_AUDIO_SENTENCES'),
 assert(source.includes('if(useHaPlugin)startPluginTTSFetchLoop(requestGeneration);'),
   'Consumer must wake the plugin producer as space frees');
 const watch=fs.readFileSync(path.join(__dirname,'../src/c/main.c'),'utf8');
+assert(watch.includes('#define START_BUFFER_THRESHOLD 2100'),
+  'Start playback after three 700-byte BLE packets');
+assert(watch.includes('app_timer_register(1, playback_timer_callback, NULL)'),
+  'Do not wait an extra full frame before first playback');
 assert(watch.includes('s_pcm_frames[2][PLAYBACK_PCM_SAMPLES]'),
   'Watch must have two independent PCM frames');
 assert(watch.includes('s_pcm_queued < 2'),
