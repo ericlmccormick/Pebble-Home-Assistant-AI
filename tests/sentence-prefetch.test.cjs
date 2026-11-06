@@ -27,6 +27,9 @@ const c={Promise,Error,requestGeneration:1,pluginPreparedSentence:null,
     Promise.resolve(prepared||c.pluginAction('tts_prepare',{text})).then(()=>{
       events.push('first-audio:'+text);
       onPcm([1,2,3],false);
+      // Model the BLE consumer draining the ready buffer before the next
+      // sentence completes (otherwise intentional backpressure blocks it).
+      c.readyAudioQueue.shift();
       first=true;
     });
     inflight.push({text,resolve});
