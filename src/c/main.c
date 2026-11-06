@@ -94,7 +94,16 @@ static char s_ha_text[MAX_TEXT_LENGTH];
   static uint8_t s_pcm_write = 0;
   static uint8_t s_pcm_queued = 0;
   static bool s_sentence_end_pending = false;
-  static uint32_t s_pending_offset = 0;           
+  static uint32_t s_pending_offset = 0;
+  // Playback counters are transmitted only once the speaker closes.
+  static bool s_audio_frame_written = false;
+  static bool s_audio_waiting = false;
+  static uint16_t s_audio_empty_events = 0;
+  static uint32_t s_audio_empty_ms = 0;
+  static uint16_t s_audio_partial_writes = 0;
+  static uint16_t s_audio_zero_writes = 0;
+  static uint16_t s_audio_frames_written = 0;
+  static uint32_t s_audio_max_queued = 0;           
   static bool s_ignore_audio = false;           
 
   static const int16_t stepTable[89] = {
@@ -267,11 +276,27 @@ static void update_text_layout() {
     }
   }
 
+  static void report_audio_stats(void) {
+    DictionaryIterator *iter=NULL;
+    if(app_message_outbox_begin(&iter)!=APP_MSG_OK||!iter)return;
+    char stats[144];
+    snprintf(stats,sizeof(stats),
+      "empty=%u,empty_ms=%lu,partial=%u,zero=%u,peak=%lu,frames=%u",
+      (unsigned)s_audio_empty_events,(unsigned long)s_audio_empty_ms,
+      (unsigned)s_audio_partial_writes,(unsigned)s_audio_zero_writes,
+      (unsigned long)s_audio_max_queued,(unsigned)s_audio_frames_written);
+    dict_write_cstring(iter,MESSAGE_KEY_COMMAND,"AUDIO_STATS");
+    dict_write_cstring(iter,MESSAGE_KEY_TEXT,stats);
+    app_message_outbox_send();
+  }
   static void delayed_close_callback(void *data) {
     s_stream_close_timer = NULL;                
     if (s_buffer_count == 0 && s_pcm_queued == 0 && s_speaker_open) { 
       speaker_stream_close();                   
       s_speaker_open = false;
+      if(s_audio_frame_written)report_audio_stats();
+      s_audio_frame_written=false;
+      s_audio_waiting=false;
       if(s_conversation_audio_complete){
         s_conversation_audio_complete=false;
         conversation_schedule_resume();
@@ -297,6 +322,7 @@ static void update_text_layout() {
       s_tail = (s_tail + 1) % RING_BUFFER_SIZE;
       s_buffer_count++;
     }
+    if(s_buffer_count>s_audio_max_queued)s_audio_max_queued=s_buffer_count;
     cancel_close_timer();
   }
 
@@ -357,16 +383,30 @@ static void update_text_layout() {
     // and never overwrite a frame until the speaker accepts all its bytes.
     fill_pcm_frames();
     if(s_pcm_queued==0){
+      if(s_audio_frame_written){
+        if(!s_audio_waiting){
+          s_audio_waiting=true;
+          if(s_audio_empty_events<65535)s_audio_empty_events++;
+        }
+        s_audio_empty_ms+=20;
+      }
       schedule_close_timer();
       s_playback_timer=app_timer_register(20,playback_timer_callback,NULL);
       return;
     }
+    s_audio_waiting=false;
     cancel_close_timer();
     uint8_t slot=s_pcm_read;
     uint32_t remaining=s_pcm_lengths[slot]-s_pending_offset;
     uint32_t accepted=speaker_stream_write(
       ((uint8_t*)s_pcm_frames[slot])+s_pending_offset,remaining);
     if(accepted>remaining)accepted=remaining;
+    if(accepted<remaining && s_audio_partial_writes<65535)s_audio_partial_writes++;
+    if(!accepted && s_audio_zero_writes<65535)s_audio_zero_writes++;
+    if(accepted){
+      s_audio_frame_written=true;
+      if(s_audio_frames_written<65535)s_audio_frames_written++;
+    }
     s_pending_offset+=accepted;
     if(s_pending_offset<s_pcm_lengths[slot]){
       s_playback_timer=app_timer_register(15,playback_timer_callback,NULL);
@@ -795,7 +835,15 @@ static void inbox_received_callback(DictionaryIterator *iterator, void *context)
         if (no_audio) {
           set_status(NULL);                     // Immediately clear status strip if no audio is expected (text-only mode)
         } else {
-          s_ignore_audio = false;               
+          s_ignore_audio = false;
+          s_audio_frame_written=false;
+          s_audio_waiting=false;
+          s_audio_empty_events=0;
+          s_audio_empty_ms=0;
+          s_audio_partial_writes=0;
+          s_audio_zero_writes=0;
+          s_audio_max_queued=0;
+          s_audio_frames_written=0;
           reset_adpcm_state();                  
           if (s_volume > 0.01f) {
             set_status("Buffering Audio...");   
