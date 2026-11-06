@@ -73,6 +73,8 @@ var clayConfig = [
       description:'On: display text and play spoken responses when TTS is configured. Off: text only.'},
     {type:'toggle',messageKey:'AUTO_SEND',label:'Send speech without confirmation',defaultValue:autoSend,
       description:'Send recognized words automatically; show them while waiting. Native speech error dialogs remain enabled.'},
+    {type:'toggle',messageKey:'TEST_BRIDGE_AUDIO',label:'Test audio through bridge (440 Hz)',defaultValue:false,
+      description:'On Save: retrieve a reference tone using the bridge WAV/session/chunk interface and play it through the normal Gemini encoder and Pebble speaker, without calling Home Assistant TTS.'},
     {type:'toggle',messageKey:'TEST_AUDIO_PATH',label:'Test watch audio (440 Hz tone)',defaultValue:false,
       description:'On Save: send a synthetic 440 Hz test tone through the same Gemini ADPCM and Bluetooth playback pipeline, without contacting Home Assistant. Helps isolate static to the watch or upstream audio.'},
     {type:'toggle',messageKey:'RESET_CHAT',label:'Start new conversation',defaultValue:false,
@@ -299,7 +301,8 @@ Pebble.addEventListener('webviewclosed',function(e) {
     localStorage.setItem('FONT_SIZE',String(fontSize));
   }
   sendWatchSettings(preview);
-  if(s.TEST_AUDIO_PATH && s.TEST_AUDIO_PATH.value)runWatchAudioTest();
+  if(s.TEST_BRIDGE_AUDIO && s.TEST_BRIDGE_AUDIO.value)runBridgeAudioTest();
+  else if(s.TEST_AUDIO_PATH && s.TEST_AUDIO_PATH.value)runWatchAudioTest();
 });
 function sendWatchSettings(preview) {
   Pebble.sendAppMessage({
@@ -316,6 +319,29 @@ Pebble.addEventListener('ready',function() {sendWatchSettings(false);});
 // -> 3-sample filter -> 4-bit IMA ADPCM -> 700B BLE -> watch decoder path.
 // A clean tone proves that chain can reproduce a known signal independently
 // of Home Assistant and the bridge's WAV handling.
+function runBridgeAudioTest(){
+  if(!hasSpeaker){errText('This Pebble has no supported speaker');return;}
+  if(!useHaPlugin){errText('Enable Home Assistant plugin mode to test bridge audio');return;}
+  var gen=++requestGeneration;
+  sentenceQueue=[];readyAudioQueue=[];
+  isFetchingTTS=true;isSendingBLE=false;
+  js_adpcm_valpred=0;js_adpcm_index=0;
+  conversationAudioFinalPending=false;
+  lastAnswer='Audio diagnostic: bridge-supplied 440 Hz reference tone (2 seconds).';
+  Pebble.sendAppMessage({COMMAND:'TEXT_RESPONSE_8_16',TEXT:lastAnswer},function(){
+    if(gen!==requestGeneration)return;
+    pluginFetchWav('',gen,true).then(function(pcm){
+      if(gen!==requestGeneration)return;
+      readyAudioQueue.push(encodeADPCM(lowPassFilter(pcm)));
+      isFetchingTTS=false;
+      startBLESendLoop();
+    }).catch(function(err){
+      if(gen!==requestGeneration)return;
+      isFetchingTTS=false;
+      errText('Bridge audio test: '+String(err.message||err));
+    });
+  });
+}
 function runWatchAudioTest(){
   if(!hasSpeaker){errText('This Pebble has no supported speaker');return;}
   var gen=++requestGeneration;
@@ -987,19 +1013,21 @@ function pluginResult(result,context){
 // Match Gemini's default audio pipeline exactly: plugin supplies WAV
 // containing signed 8kHz mono PCM16; the phone low-pass filters and encodes
 // 4-bit IMA ADPCM, then sends 700-byte packets to the watch.
-function pluginFetchWav(sentence,gen){
+function pluginFetchWav(sentence,gen,testTone){
   var session=null,expectedChecksum=null;
-  return pluginAction('tts_prepare',{text:sentence}).then(function(result){
+  var args=testTone?{test_tone:true}:{text:sentence};
+  return pluginAction('tts_prepare',args).then(function(result){
     var meta=pluginResult(result,'TTS preparation');
     if(meta.format!=='pcm_s16le_wav'||meta.sample_rate!==8000||
        meta.channels!==1||meta.bits_per_sample!==16)
-      throw Error('Bridge audio version mismatch: install v0.2.7 PCM WAV plugin');
+      throw Error('Bridge PCM WAV format mismatch: update Home Assistant Bridge');
     if(!meta.session_id||!Number.isInteger(meta.length)||meta.length<44||
        meta.length>1500000)
       throw Error('Invalid plugin TTS session');
     if(!Number.isInteger(meta.wav_checksum))
       throw Error('Bridge lacks WAV integrity metadata; update bridge');
     expectedChecksum=meta.wav_checksum>>>0;
+    if(meta.audio_diagnostics)console.log('Bridge PCM diagnostics: '+JSON.stringify(meta.audio_diagnostics));
     session=String(meta.session_id);
     var length=meta.length,step=meta.chunk_bytes||6000;
     if(step!==6000)throw Error('Unsupported TTS chunk size');
