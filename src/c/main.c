@@ -24,7 +24,7 @@
   #define PLAYBACK_ADPCM_BYTES 800         
   #define PLAYBACK_PCM_SAMPLES (PLAYBACK_ADPCM_BYTES * 2) 
   #define PLAYBACK_INTERVAL_MS 200         
-  #define START_BUFFER_THRESHOLD 3000      
+  #define START_BUFFER_THRESHOLD 2100      
   #define STREAM_CLOSE_DELAY_MS 1500       
 #endif
 
@@ -314,7 +314,9 @@ static void update_text_layout() {
     }
 
     if (!s_playback_timer) {                     
-      s_playback_timer = app_timer_register(PLAYBACK_INTERVAL_MS, playback_timer_callback, NULL); 
+      // The ring has already met the prebuffer threshold. The first
+      // PCM frame should begin immediately rather than waiting 200 ms.
+      s_playback_timer = app_timer_register(1, playback_timer_callback, NULL); 
     }
   }
 
