@@ -29,8 +29,8 @@ assert(watch.includes('#include "ha_audio.h"'));
 assert(watch.includes('ha_audio_handle_message(iterator)'));
 assert(!watch.includes('static uint8_t s_ring_buffer'),
   'Watch must not duplicate shared speaker implementation');
-assert(watch.includes('#define HA_ENABLE_NATIVE_MIC_STREAM 0'),
-  'Plugin-only release must disable direct microphone streaming');
+assert(!watch.includes('native_mic_')&&!watch.includes('mic_stream_to_phone_'),
+  'Plugin-only release must not contain a direct microphone streaming implementation');
 assert(watchSDK.includes('#define START_BUFFER_THRESHOLD 2800'));
 assert(watchSDK.includes('s_pcm_frames[2][PLAYBACK_PCM_SAMPLES]'));
 assert(sdk.includes('streamedAdpcm>=3000 || last'));
