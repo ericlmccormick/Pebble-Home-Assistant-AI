@@ -24,8 +24,7 @@
 typedef enum { UI_STATE_IDLE, UI_STATE_THINKING, UI_STATE_RESULTS } UIState;
 
 static UIState s_current_state = UI_STATE_IDLE;
-// Conversation mode is an explicit UI state until raw microphone capture
-// and HA Assist WebSocket streaming are available in the target SDK.
+// Conversation mode repeats PebbleOS dictation turns through the Bridge.
 static bool s_conversation_mode = false;
 static bool s_dictation_fallback = false;
 static bool s_conversation_dictating = false;
@@ -72,6 +71,7 @@ static void set_ui_state(UIState state);
 static void window_click_config_provider(void *context);
 static void conversation_disable(void);
 static void conversation_schedule_resume(void);
+#ifdef PBL_SPEAKER
   static void up_volume_handler(ClickRecognizerRef recognizer, void *context);   
   static void down_volume_handler(ClickRecognizerRef recognizer, void *context); 
 #endif
