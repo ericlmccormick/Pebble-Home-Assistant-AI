@@ -73,6 +73,8 @@ var clayConfig = [
       description:'On: display text and play spoken responses when TTS is configured. Off: text only.'},
     {type:'toggle',messageKey:'AUTO_SEND',label:'Send speech without confirmation',defaultValue:autoSend,
       description:'Send recognized words automatically; show them while waiting. Native speech error dialogs remain enabled.'},
+    {type:'toggle',messageKey:'TEST_AUDIO_PATH',label:'Test watch audio (440 Hz tone)',defaultValue:false,
+      description:'On Save: send a synthetic 440 Hz test tone through the same Gemini ADPCM and Bluetooth playback pipeline, without contacting Home Assistant. Helps isolate static to the watch or upstream audio.'},
     {type:'toggle',messageKey:'RESET_CHAT',label:'Start new conversation',defaultValue:false,
       description:'Clear stored Home Assistant conversation ID'}
   ]},
@@ -297,6 +299,7 @@ Pebble.addEventListener('webviewclosed',function(e) {
     localStorage.setItem('FONT_SIZE',String(fontSize));
   }
   sendWatchSettings(preview);
+  if(s.TEST_AUDIO_PATH && s.TEST_AUDIO_PATH.value)runWatchAudioTest();
 });
 function sendWatchSettings(preview) {
   Pebble.sendAppMessage({
@@ -309,6 +312,26 @@ function sendWatchSettings(preview) {
   },function(error){console.log('Watch settings delivery failed '+JSON.stringify(error));});
 }
 Pebble.addEventListener('ready',function() {sendWatchSettings(false);});
+// Deliberate diagnostic only: exercises the unchanged Gemini 8kHz PCM16
+// -> 3-sample filter -> 4-bit IMA ADPCM -> 700B BLE -> watch decoder path.
+// A clean tone proves that chain can reproduce a known signal independently
+// of Home Assistant and the bridge's WAV handling.
+function runWatchAudioTest(){
+  if(!hasSpeaker){errText('This Pebble has no supported speaker');return;}
+  var gen=++requestGeneration;
+  sentenceQueue=[];readyAudioQueue=[];
+  isFetchingTTS=false;isSendingBLE=false;
+  js_adpcm_valpred=0;js_adpcm_index=0;
+  conversationAudioFinalPending=false;
+  lastAnswer='Audio diagnostic: 440 Hz reference tone (1.5 seconds).';
+  var pcm=[];
+  for(var i=0;i<12000;i++)
+    pcm.push(Math.round(9000*Math.sin(2*Math.PI*440*i/8000)));
+  readyAudioQueue.push(encodeADPCM(lowPassFilter(pcm)));
+  Pebble.sendAppMessage({COMMAND:'TEXT_RESPONSE_8_16',TEXT:lastAnswer},
+    function(){if(gen===requestGeneration)startBLESendLoop();},
+    function(err){console.log('Audio diagnostic setup failed '+JSON.stringify(err));});
+}
 function errText(message) {
   Pebble.sendAppMessage({COMMAND:'TEXT_RESPONSE_NO_AUDIO',TEXT:String(message).substring(0,250)});
 }
