@@ -24,4 +24,23 @@ while(transmitted<80000){
 assert(peak<=7500,'Send-ahead estimation must not overfill its safety limit');
 assert(firstPlayback<400,'Initial packets should not incur a 175ms fixed delay');
 assert(transmitted===80000,'Full long response must be delivered');
+// The Gemini pipeline overlaps sentence generation with transport. This
+// tests both the producer's bounded queue and the watch's ping-pong frames.
+assert(source.includes('MAX_READY_AUDIO_SENTENCES=2'),'Keep only two next-sentence buffers');
+assert(source.includes('readyAudioQueue.length>=MAX_READY_AUDIO_SENTENCES'),
+  'Do not fetch indefinitely ahead on long speech');
+assert(source.includes('if(useHaPlugin)startPluginTTSFetchLoop(requestGeneration);'),
+  'Consumer must wake the plugin producer as space frees');
+const watch=fs.readFileSync(path.join(__dirname,'../src/c/main.c'),'utf8');
+assert(watch.includes('s_pcm_frames[2][PLAYBACK_PCM_SAMPLES]'),
+  'Watch must have two independent PCM frames');
+assert(watch.includes('s_pcm_queued < 2'),
+  'Watch may prepare next PCM frame while previous one drains');
+assert(watch.includes('s_pending_offset<s_pcm_lengths[slot]'),
+  'A partial speaker write must never discard unwritten bytes');
+assert(watch.includes('s_sentence_end_pending && s_buffer_count > 0'),
+  'Short trailing sentence audio must be preserved');
+assert(watch.includes('length > RING_BUFFER_SIZE - s_buffer_count'),
+  'Ring overflow must never silently discard ADPCM predictor bytes');
+console.log('Gemini-style double-buffer and producer/consumer invariants passed');
 console.log('Audio flow and bounded send-ahead regression checks passed');
