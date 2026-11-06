@@ -1118,7 +1118,11 @@ function startBLESendLoop() {
         { 'COMMAND': 'AUDIO_CHUNK', 'CHUNK': chunk },
         function success() {
           failureCount=0;
-          setTimeout(sendNextChunk, 60);
+          // 8 kHz * 4-bit IMA ADPCM = 4000 bytes/second.
+          // 700 B / 175 ms = 4000 B/s, matching the watch decoder.
+          // The old 60 ms interval delivered 11667 B/s and silently
+          // overflowed the watch's 16 KiB ring buffer on longer answers.
+          setTimeout(sendNextChunk, 175);
         },
         function failure() {
           cursor=previousCursor;
