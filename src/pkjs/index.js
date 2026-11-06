@@ -116,7 +116,9 @@ function connectionModeClay() {
     var fields=['HA_URL','HA_TOKEN','HA_PIPELINE','HA_AGENT','HA_TTS'];
     var heading=page.getItemById('builtin_connection_heading');
     function updateVisibility() {
-      var show=clayBoolean(toggle.get(),!useHaPlugin);
+      // This callback runs inside the Clay webview, without PebbleKit globals.
+      var raw=toggle.get();
+      var show=raw===true||raw===1||raw==='true'||raw==='1'||raw==='on';
       if(heading)heading[show?'show':'hide']();
       fields.forEach(function(key) {
         var item=page.getItemByMessageKey(key);
