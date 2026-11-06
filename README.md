@@ -1,12 +1,12 @@
-# Home Assistant AI — Pebble watch app (Bridge-only)
+# Home Assistant AI v1.0.0 — Pebble watch app (Bridge-only)
 
 Home Assistant AI is a Pebble watch interface for Home Assistant Assist, powered by the **Home Assistant Bridge plugin**. All Home Assistant network traffic, credentials, agent selection, TTS generation and WAV conversion are handled by the Bridge. The app does not contain a built-in/direct Home Assistant connection.
 
 ## Required installation
 
-1. Install and configure **[Home Assistant Bridge](https://github.com/ericlmccormick/Pebble-HA-plug-in)** v0.2.21 or newer in the Pebble mobile app.
+1. Install and configure **[Home Assistant Bridge](https://github.com/ericlmccormick/Pebble-HA-plug-in)** v1.0.0 in the Pebble mobile app.
 2. In **Bridge settings**, enter the Home Assistant HTTPS URL and long-lived token, choose the default conversation agent and TTS engine, and verify the connection.
-3. Install **[Home Assistant AI](https://github.com/ericlmccormick/Pebble-Home-Assistant-AI)** v0.3.0 or newer. Allow its HomeConverse and InvokeAction plugin permissions.
+3. Install **[Home Assistant AI](https://github.com/ericlmccormick/Pebble-Home-Assistant-AI)** v1.0.0. Allow its HomeConverse and InvokeAction plugin permissions.
 4. Press **Select** to use PebbleOS dictation. Home Assistant's reply appears on the watch, with audio on Pebble watches that have speakers.
 5. In app Settings, configure audio on/off, automatic dictation submission, font size, vibration and optional conversation reset. Server credentials and TTS engine selection are managed **only in the Bridge**, not in this app.
 
@@ -24,20 +24,18 @@ The app's `src/pkjs/index.js` now contains only conversation UI, Bridge invocati
 
 This app vendors a tested snapshot of the three SDK source files. Future protocol changes should update **all three files together**, and regression-test the native app before release.
 
-## Builds and direct PBW downloads
+## Stable v1.0.0 PBW downloads
 
-The `continuous-native-conversation` branch publishes a rolling .pbw:
+[Download Home Assistant AI 1.0.0 (.pbw)](https://github.com/ericlmccormick/Pebble-Home-Assistant-AI/releases/download/v1.0.0/home-assistant-ai-v1.0.0.pbw)
 
-[Download Home Assistant AI (.pbw)](https://github.com/ericlmccormick/Pebble-Home-Assistant-AI/releases/download/dev-continuous-native-conversation/home-assistant-ai.pbw)
+[Download Home Assistant Bridge 1.0.0 (.pbw)](https://github.com/ericlmccormick/Pebble-HA-plug-in/releases/download/v1.0.0/home-assistant-bridge-v1.0.0.pbw)
 
-[Download Home Assistant Bridge (.pbw)](https://github.com/ericlmccormick/Pebble-HA-plug-in/releases/download/dev-latest/pebble-home-assistant-plugin.pbw)
+[View the app release and build workflow](https://github.com/ericlmccormick/Pebble-Home-Assistant-AI/actions/workflows/release-v1.yml)
 
-[View the app build workflow](https://github.com/ericlmccormick/Pebble-Home-Assistant-AI/actions/workflows/direct-pbw.yml)
-
-The build workflow runs plugin-only architecture, audio transport, and prefetch regression tests and compiles the native watch app. An actual Pebble Time 2 hardware smoke test is still recommended before public distribution.
+Install the Bridge first, configure your Home Assistant credentials and voice defaults in its settings, then install the watch app and authorize its plugin permissions. The app itself never stores a Home Assistant access token.
 
 ## Migration from v0.2.x
 
-v0.3.0 intentionally removes the built-in Home Assistant URL/token and direct connections. Earlier app-local direct credentials are deleted on launch, while conversation ID, text-to-speech enabled state, font size, haptics and dictation preferences are preserved. Configure credentials and voice defaults **in the Bridge settings** before running the new app.
+v1.0.0 removes the built-in Home Assistant URL/token and direct connections. Earlier app-local direct credentials are deleted on launch, while conversation ID, text-to-speech enabled state, font size, haptics and dictation preferences are preserved. Configure credentials and voice defaults **in the Bridge settings** before running the new app.
 
 For rollback, the previous implementation remains in older Git commits; installing an old PBW is not the recommended long-term method because it duplicates Home Assistant credentials and audio transport logic.
