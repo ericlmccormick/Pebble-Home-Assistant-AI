@@ -447,6 +447,43 @@ static void inbox_received_callback(DictionaryIterator *iterator, void *context)
   }
 }
 
+// Dictation results must survive a temporarily busy AppMessage outbox.
+#define DICTATION_SEND_RETRIES 5
+static AppTimer *s_dictation_send_timer=NULL;
+static char s_pending_dictation[MAX_TEXT_LENGTH];
+static bool s_pending_conversation=false;
+static uint8_t s_dictation_send_attempts=0;
+static void send_pending_dictation(void *context){
+  s_dictation_send_timer=NULL;
+  DictionaryIterator *iter=NULL;
+  AppMessageResult result=app_message_outbox_begin(&iter);
+  if(result==APP_MSG_OK && iter){
+    dict_write_cstring(iter,MESSAGE_KEY_COMMAND,
+      s_pending_conversation?"CONV_DICTATION":"DICTATION");
+    dict_write_cstring(iter,MESSAGE_KEY_TEXT,s_pending_dictation);
+#ifdef PBL_SPEAKER
+    dict_write_int32(iter,MESSAGE_KEY_VOLUME,(int)(s_volume*100.0f+0.5f));
+#else
+    dict_write_int32(iter,MESSAGE_KEY_VOLUME,0);
+#endif
+    result=app_message_outbox_send();
+    if(result==APP_MSG_OK){
+      s_dictation_send_attempts=0;
+      return;
+    }
+  }
+  if(++s_dictation_send_attempts<DICTATION_SEND_RETRIES){
+    set_status("Sending to phone...");
+    s_dictation_send_timer=app_timer_register(250,send_pending_dictation,NULL);
+    return;
+  }
+  s_dictation_send_attempts=0;
+  if(s_conversation_mode)conversation_disable();
+  set_ui_state(UI_STATE_IDLE);
+  set_status("Phone unavailable - retry");
+  ha_haptic();
+}
+
 static void dictation_session_callback(DictationSession *session, DictationSessionStatus status, char *transcription, void *context) {
   s_conversation_dictating = false;
   if (status == DictationSessionStatusSuccess && transcription && transcription[0]) {
@@ -459,32 +496,14 @@ static void dictation_session_callback(DictationSession *session, DictationSessi
     text_layer_set_text(s_text_layer, "");      
     update_text_layout();                       
 
-    DictionaryIterator *iter = NULL;
-    AppMessageResult outbox_result = app_message_outbox_begin(&iter);
-    if (outbox_result != APP_MSG_OK || !iter) {
-      if (s_conversation_mode) conversation_disable();
-      set_ui_state(UI_STATE_IDLE);
-      set_status("Phone message queue busy");
-      ha_haptic();
-      return;
+    if(s_dictation_send_timer){
+      app_timer_cancel(s_dictation_send_timer);
+      s_dictation_send_timer=NULL;
     }
-    dict_write_cstring(iter, MESSAGE_KEY_COMMAND,
-                       s_conversation_mode && s_dictation_fallback ?
-                       "CONV_DICTATION" : "DICTATION"); 
-    dict_write_cstring(iter, MESSAGE_KEY_TEXT, transcription);  
-    
-    #ifdef PBL_SPEAKER
-      dict_write_int32(iter, MESSAGE_KEY_VOLUME, (int)(s_volume * 100.0f + 0.5f)); 
-    #else
-      dict_write_int32(iter, MESSAGE_KEY_VOLUME, 0); 
-    #endif
-    
-    if (app_message_outbox_send() != APP_MSG_OK) {
-      if (s_conversation_mode) conversation_disable();
-      set_ui_state(UI_STATE_IDLE);
-      set_status("Could not send to phone");
-      ha_haptic();
-    }
+    snprintf(s_pending_dictation,sizeof(s_pending_dictation),"%s",transcription);
+    s_pending_conversation=s_conversation_mode&&s_dictation_fallback;
+    s_dictation_send_attempts=0;
+    send_pending_dictation(NULL);
   } else {
     bool cancelled = status == DictationSessionStatusFailureTranscriptionRejected ||
                      status == DictationSessionStatusFailureTranscriptionRejectedWithError;
@@ -688,7 +707,8 @@ static void init() {
   window_stack_push(s_main_window, true);       
 }
 
-static void deinit() { 
+static void deinit() {
+  if(s_dictation_send_timer)app_timer_cancel(s_dictation_send_timer);
   window_destroy(s_main_window);
   ha_audio_deinit();                
 }
