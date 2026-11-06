@@ -424,8 +424,6 @@ static void inbox_received_callback(DictionaryIterator *iterator, void *context)
       set_ui_state(UI_STATE_IDLE);
       set_status("Conversation stopped");
     }
-    else if (strcmp(command_tuple->value->cstring, "MIC_MODE_OFF") == 0) {
-    else if (strcmp(command_tuple->value->cstring, "MIC_TURN_END") == 0) {
     else if (strcmp(command_tuple->value->cstring, "CONV_TRANSCRIPT") == 0) {
       Tuple *utterance = dict_find(iterator, MESSAGE_KEY_TEXT);
       if (utterance && s_thinking_transcript_layer) {
