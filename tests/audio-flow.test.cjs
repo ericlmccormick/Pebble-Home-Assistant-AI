@@ -16,8 +16,9 @@ assert(phone.includes("require('./ha_audio').create("),
 assert(phone.includes("pluginAction('conversation',args)"),
   'Conversation must route through the Bridge');
 assert(!phone.includes('new XMLHttpRequest')&&!phone.includes('new WebSocket')&&
-  !phone.includes('/api/tts_get_url')&&!phone.includes('HA_TOKEN')===false,
-  'No direct Home Assistant network client may exist in the new app');
+  !phone.includes('/api/tts_get_url')&&!phone.includes('/api/conversation/process')&&
+  !phone.includes('HA_URL=')&&!phone.includes('HA_TOKEN='),
+  'The app must not contain a direct Home Assistant network client');
 assert(!phone.includes('HA_TOKEN')||phone.includes("localStorage.removeItem(key)"),
   'Old direct credentials must be purged');
 assert(!phone.includes('USE_BUILTIN_CONNECTION'),
