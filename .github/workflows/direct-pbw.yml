@@ -36,6 +36,7 @@ jobs:
           node --check src/pkjs/index.js
           node tests/audio-flow.test.cjs
           node tests/progressive-audio.test.cjs
+          node tests/sentence-prefetch.test.cjs
       - name: Install firmware-compatible Pebble SDK
         run: |
           uv tool install pebble-tool
