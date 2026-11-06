@@ -1145,19 +1145,35 @@ function pluginFetchWav(sentence,gen,testTone,options){
     var length=meta.length,step=meta.chunk_bytes||6000;
     if(step!==6000)throw Error('Unsupported TTS chunk size');
     var data=new Uint8Array(length);
-    function receive(offset){
+    // Pebble launches one plugin action per WAV chunk. The original loop
+    // waited for each action to restart/finish before requesting the next,
+    // delaying the entire first sentence. Read three independent offsets
+    // concurrently, with a bounded batch to avoid swamping the plugin host.
+    function receiveBatch(offset){
       if(gen!==requestGeneration)throw Error('TTS cancelled');
       if(offset>=length)return data.buffer;
-      return pluginAction('tts_chunk',{session_id:session,offset:offset}).then(function(reply){
-        var part=pluginResult(reply,'TTS chunk');
-        var bytes=pluginDecodeBase64(String(part.audio||''));
-        if(part.offset!==offset||bytes.length!==Math.min(step,length-offset))
-          throw Error('Invalid plugin TTS audio chunk');
-        data.set(bytes,offset);
-        return receive(offset+bytes.length);
+      var pending=[];
+      var limit=Math.min(length,offset+step*3);
+      for(var at=offset;at<limit;at+=step){
+        (function(chunkOffset){
+          pending.push(pluginAction('tts_chunk',{
+            session_id:session,offset:chunkOffset
+          }).then(function(reply){
+            if(gen!==requestGeneration)throw Error('TTS cancelled');
+            var part=pluginResult(reply,'TTS chunk');
+            var bytes=pluginDecodeBase64(String(part.audio||''));
+            if(part.offset!==chunkOffset||
+               bytes.length!==Math.min(step,length-chunkOffset))
+              throw Error('Invalid plugin TTS audio chunk');
+            data.set(bytes,chunkOffset);
+          }));
+        })(at);
+      }
+      return Promise.all(pending).then(function(){
+        return receiveBatch(limit);
       });
     }
-    return receive(0);
+    return receiveBatch(0);
   }).then(function(audio){
     if(session)pluginAction('tts_release',{session_id:session}).catch(function(){});
     var receivedChecksum=pluginWavChecksum(new Uint8Array(audio));
@@ -1232,6 +1248,27 @@ function startTTSFetchLoop(gen) {
       function(){Pebble.sendAppMessage({COMMAND:'CONV_RESUME'});});
   });
 }
+// Approximate the watch's ADPCM buffer occupancy from acknowledged BLE bytes
+// and its 8 kHz / 4-bit = 4000 bytes/s decoder. Keep a modest safety margin
+// below the physical 16 KiB ring. Never wait a fixed 175 ms after each ACK:
+// that added BLE callback time on top of the audio transmission budget.
+var bleFlowGeneration=-1,bleFlowSent=0,bleFlowStartedAt=0;
+var BLE_PLAYBACK_BPS=4000,BLE_PREBUFFER_BYTES=3000,BLE_SAFE_QUEUE_BYTES=7500;
+function bleAudioQueueEstimate(now){
+  if(!bleFlowStartedAt)return bleFlowSent;
+  return Math.max(0,bleFlowSent-
+    Math.max(0,now-bleFlowStartedAt)*BLE_PLAYBACK_BPS/1000);
+}
+function bleAudioWaitMs(nextSize,now){
+  if(!bleFlowStartedAt)return 0;
+  var excess=bleAudioQueueEstimate(now)+nextSize-BLE_SAFE_QUEUE_BYTES;
+  return excess>0?Math.ceil(excess*1000/BLE_PLAYBACK_BPS):0;
+}
+function bleAudioAck(bytes,now){
+  bleFlowSent+=bytes;
+  if(!bleFlowStartedAt && bleFlowSent>=BLE_PREBUFFER_BYTES)
+    bleFlowStartedAt=now;
+}
 function startBLESendLoop() {
   if (isSendingBLE) return; 
   if (readyAudioQueue.length === 0) {conversationMaybeCompleteAudio();return;} 
@@ -1241,6 +1278,11 @@ function startBLESendLoop() {
   var cursor = 0;
   var failureCount = 0;
   var generation = requestGeneration;
+  if(bleFlowGeneration!==generation){
+    bleFlowGeneration=generation;
+    bleFlowSent=0;
+    bleFlowStartedAt=0;
+  }
   function audioSendFailed() {
     if(generation!==requestGeneration)return;
     isSendingBLE=false;
@@ -1262,15 +1304,22 @@ function startBLESendLoop() {
     }
 
     if (chunk.length > 0) {
+      // Rewind and retry later if transmitting this packet would exceed the
+      // estimated safe send-ahead buffer. This is bounded pacing, not a
+      // fixed per-packet penalty on top of Bluetooth acknowledgement time.
+      var wait=bleAudioWaitMs(chunk.length,Date.now());
+      if(wait>0){
+        cursor=previousCursor;
+        setTimeout(sendNextChunk,Math.max(10,wait));
+        return;
+      }
       Pebble.sendAppMessage(
         { 'COMMAND': 'AUDIO_CHUNK', 'CHUNK': chunk },
         function success() {
+          if(generation!==requestGeneration)return;
           failureCount=0;
-          // 8 kHz * 4-bit IMA ADPCM = 4000 bytes/second.
-          // 700 B / 175 ms = 4000 B/s, matching the watch decoder.
-          // The old 60 ms interval delivered 11667 B/s and silently
-          // overflowed the watch's 16 KiB ring buffer on longer answers.
-          setTimeout(sendNextChunk, 175);
+          bleAudioAck(chunk.length,Date.now());
+          setTimeout(sendNextChunk,10);
         },
         function failure() {
           cursor=previousCursor;
