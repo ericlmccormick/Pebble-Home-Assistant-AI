@@ -5,7 +5,9 @@ const vm=require('vm');
 const source=fs.readFileSync('src/pkjs/index.js','utf8');
 const storage=new Map([
   ['HA_URL','https://ha.example'],['HA_TOKEN','access-token'],
-  ['HA_AGENT','conversation.google_ai'],['HA_TTS','tts.home_assistant_cloud']
+  ['HA_AGENT','conversation.google_ai'],['HA_TTS','tts.home_assistant_cloud'],
+  ['USE_HA_PLUGIN','false'],
+  ['ENABLE_TTS','true'],['TEXT_ONLY','true']
 ]);
 const sent=[], calls=[];
 const Pebble={
@@ -42,13 +44,18 @@ function settings(obj) {
 (async()=>{
   Pebble.listeners.ready();
   assert(sent.some(p=>p.COMMAND==='SETTINGS'&&p.AUTO_SEND===1&&p.HAPTIC_LEVEL===2));
+  // Migrate effective legacy preference: Text-only ON overrides old TTS ON.
+  assert.equal(storage.get('ENABLE_TTS'),'false');
+  assert.equal(storage.has('TEXT_ONLY'),false,'Legacy key should be removed');
+  assert(source.includes("messageKey:'ENABLE_TTS'"));
+  assert(!source.includes("messageKey:'TEXT_ONLY'"));
   settings({
     AUTO_SEND:{value:false},
-    TEXT_ONLY:{value:true},
+    ENABLE_TTS:{value:false},
     HAPTIC_LEVEL:{value:'high'}
   });
   assert.equal(storage.get('AUTO_SEND'),'false');
-  assert.equal(storage.get('TEXT_ONLY'),'true');
+  assert.equal(storage.get('ENABLE_TTS'),'false');
   assert.equal(storage.get('HAPTIC_LEVEL'),'high');
   assert(sent.some(p=>p.COMMAND==='SETTINGS'&&p.AUTO_SEND===0&&p.HAPTIC_LEVEL===3));
   assert(sent.some(p=>p.COMMAND==='HAPTIC_PREVIEW'&&p.HAPTIC_LEVEL===3));

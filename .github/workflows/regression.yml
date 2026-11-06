@@ -10,66 +10,32 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - name: JavaScript syntax
-        run: node --check src/pkjs/index.js
-      - name: WAV decoder regression tests
-        run: node tests/test_wav_parser.js
-      - name: Assist conversation WebSocket regression tests
-        run: node tests/test_conversation.js
-      - name: Home Assistant dropdown discovery tests
-        run: node tests/test_settings_discovery.js
-      - name: Release settings and retry regression tests
-        run: node tests/test_release_features.js
-      - name: Home Assistant API and Pebble message contract
+      - name: JavaScript syntax (app and shared audio SDK)
+        run: |
+          node --check src/pkjs/index.js
+          node --check src/pkjs/ha_audio.js
+      - name: Plugin-only architecture and Pebble message contract
+        run: node tests/audio-flow.test.cjs
+      - name: Progressive WAV playback and integrity tests
+        run: node tests/progressive-audio.test.cjs
+      - name: Sentence prefetch, ordered chunks and Bluetooth continuity
+        run: node tests/sentence-prefetch.test.cjs
+      - name: Static watch SDK interface validation
         run: |
           python3 - <<'PY'
-          import json
           from pathlib import Path
-          pkg = json.loads(Path('package.json').read_text())
-          c = Path('src/c/main.c').read_text()
-          js = Path('src/pkjs/index.js').read_text()
-          keys = set(pkg['pebble']['messageKeys'])
-          assert {'COMMAND','TEXT','CHUNK','FONT_SIZE','VOLUME'} <= keys
-          for cmd in ('DICTATION','TEXT_RESPONSE_NO_AUDIO','TEXT_RESPONSE_8_16',
-                      'AUDIO_CHUNK','AUDIO_SENTENCE_END'):
-              assert (cmd in c or (cmd == 'TEXT_RESPONSE_8_16' and 'strncmp(command_tuple->value->cstring, "TEXT_RESPONSE", 13)' in c))
-              assert cmd in js
-          assert '/api/conversation/process' in js
-          assert '/api/tts_get_url' in js
-          assert 'preferred_format' in js and "preferred_sample_rate:8000" in js
-          assert 's_gemini_text' not in c
-          assert 'RESOURCE_ID_IMAGE_GEMINI_LOGO' not in c
-          assert 'generativelanguage.googleapis.com' not in js
-          assert 'texttospeech.googleapis.com' not in js
-          assert pkg['pebble']['displayName'] == 'Home Assistant AI'
-          assert 'select_long_click_handler' not in c
-          assert 'window_single_click_subscribe(BUTTON_ID_BACK, results_back_click_handler)' in c
-          assert 'set_ui_state(UI_STATE_IDLE);' in c
-          assert 'window_single_click_subscribe(BUTTON_ID_BACK, exit_back_click_handler)' in c
-          assert c.count('window_single_click_subscribe(BUTTON_ID_BACK') == 2
-          assert 'window_long_click_subscribe(BUTTON_ID_SELECT' not in c
-          assert '"Home\\nAssistant AI"' in c
-          assert '"Vol +"' in c and '"Vol -"' in c
-          assert 'Hold: conversation' not in c
-          assert 'Tap Select: talk' not in c
-          assert 'GRect(65, 19, bounds.size.w - 67, 52)' in c
-          assert 'GRect(bounds.size.w - 59, 23, 56, 24)' in c
-          assert 'GRect(bounds.size.w - 59, bounds.size.h - 53, 56, 24)' in c
-          assert 'RESOURCE_ID_IMAGE_HOME_ASSISTANT_LOGO' in c
-          assert {'AUTO_SEND','HAPTIC_LEVEL'} <= keys
-          for cmd in ('SETTINGS','HAPTIC_PREVIEW'):
-              assert cmd in c and cmd in js
-          assert 'dictation_session_enable_confirmation' in c
-          assert 'dictation_session_enable_error_dialogs' in c
-          assert 'You said:' in c
-          assert "messageKey:'TEXT_ONLY'" in js
-          assert "messageKey:'AUTO_SEND'" in js
-          assert "messageKey:'HAPTIC_LEVEL'" in js
-          assert 'Home Assistant timed out' in js
-          assert 'failureCount>=5' in js
-          assert pkg['pebble']['manifestVersion'] == 2
-          assert 'Microphone' in pkg['pebble']['usesPermissions']
-          for cmd in ('MIC_START','MIC_AUDIO','MIC_END','MIC_CANCEL','CONV_RESUME','CONV_AUDIO_END'):
-              assert cmd in c and cmd in js
-          print('Static regression checks passed')
+          c=Path('src/c/main.c').read_text()
+          watch=Path('src/c/ha_audio.c').read_text()
+          header=Path('src/c/ha_audio.h').read_text()
+          phone=Path('src/pkjs/index.js').read_text()
+          assert '#include "ha_audio.h"' in c
+          assert 'ha_audio_handle_message(iterator)' in c
+          assert 'ha_audio_handle_message' in watch and 'ha_audio_handle_message' in header
+          assert 'AUDIO_RESET' in watch and 'AUDIO_CHUNK' in watch
+          assert 'AUDIO_SENTENCE_END' in watch and 'AUDIO_STOP' in watch
+          assert 's_pcm_frames[2][PLAYBACK_PCM_SAMPLES]' in watch
+          assert 'mic_stream_to_phone' not in c
+          assert 'new WebSocket' not in phone and '/api/conversation/process' not in phone
+          assert 'USE_BUILTIN_CONNECTION' not in phone
+          print('Bridge-only native audio and message contract passed')
           PY

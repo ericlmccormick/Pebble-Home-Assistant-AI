@@ -77,8 +77,17 @@
     },
     "manifestVersion": 2,
     "usesPermissions": [
-      "Microphone"
+      "WatchMicrophone",
+      {
+        "name": "HomeConverse",
+        "plugin": "a74370b6-929c-4ec0-b7ee-2fc6fca8db57"
+      },
+      {
+        "name": "InvokeAction",
+        "plugin": "a74370b6-929c-4ec0-b7ee-2fc6fca8db57"
+      }
     ]
   },
-  "version": "0.1.0"
+  "version": "1.0.0",
+  "description": "Pebble Home Assistant voice app powered exclusively by the Home Assistant Bridge plugin and its reusable audio SDK"
 }

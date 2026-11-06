@@ -2,10 +2,11 @@ name: Build and publish direct PBW
 on:
   workflow_dispatch:
   push:
-    branches: [main]
+    branches: [continuous-native-conversation]
     paths:
       - 'package.json'
       - 'src/**'
+      - 'tests/**'
       - 'resources/**'
       - 'images/**'
       - 'wscript'
@@ -33,6 +34,10 @@ jobs:
         run: |
           node -e "const p=require('./package.json');if(p.pebble.projectType!=='native'||p.pebble.sdkVersion!=='3')process.exit(1)"
           node --check src/pkjs/index.js
+          node --check src/pkjs/ha_audio.js
+          node tests/audio-flow.test.cjs
+          node tests/progressive-audio.test.cjs
+          node tests/sentence-prefetch.test.cjs
       - name: Install firmware-compatible Pebble SDK
         run: |
           uv tool install pebble-tool
@@ -58,16 +63,16 @@ jobs:
           path: direct-download/home-assistant-ai.pbw
           if-no-files-found: error
       - name: Publish directly installable PBW to GitHub Releases
-        if: github.ref == 'refs/heads/main'
+        if: github.ref == 'refs/heads/continuous-native-conversation'
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
-          if ! gh release view dev-latest >/dev/null 2>&1; then
-            gh release create dev-latest --target "$GITHUB_SHA" \
+          if ! gh release view dev-continuous-native-conversation >/dev/null 2>&1; then
+            gh release create dev-continuous-native-conversation --target "$GITHUB_SHA" \
               --title "Latest development PBW" --prerelease \
-              --notes "Rolling main-branch development build. Install the .pbw directly; GitHub Actions artifacts are ZIP archives."
+              --notes "Rolling continuous-native-conversation branch development build. Install the .pbw directly; GitHub Actions artifacts are ZIP archives."
           fi
-          gh release upload dev-latest direct-download/home-assistant-ai.pbw --clobber
+          gh release upload dev-continuous-native-conversation direct-download/home-assistant-ai.pbw --clobber
           echo "### Direct PBW download" >> "$GITHUB_STEP_SUMMARY"
-          echo "[Download home-assistant-ai.pbw](https://github.com/$GITHUB_REPOSITORY/releases/download/dev-latest/home-assistant-ai.pbw)" >> "$GITHUB_STEP_SUMMARY"
+          echo "[Download home-assistant-ai.pbw](https://github.com/$GITHUB_REPOSITORY/releases/download/dev-continuous-native-conversation/home-assistant-ai.pbw)" >> "$GITHUB_STEP_SUMMARY"
