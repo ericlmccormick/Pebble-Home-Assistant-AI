@@ -1446,13 +1446,17 @@ function startPluginTTSFetchLoop(gen){
   var selected=consumePreparedBridgeSentence(gen);
   if(!selected)return;
   isFetchingTTS=true;
-  var sentence=selected.sentence,firstChunk=true;
+  var sentence=selected.sentence,streamedAdpcm=0,startedNextPrep=false;
   pluginStreamWav(sentence,gen,function(audio,last){
     if(gen!==requestGeneration)throw Error('TTS cancelled');
-    if(firstChunk){
-      firstChunk=false;
-      // The current sentence has usable audio: begin preparing the next
-      // sentence while its remaining chunks continue playing/transferring.
+    streamedAdpcm+=audio.length;
+    // Prioritize the active sentence's first ~0.75 seconds (three 6KB
+    // WAV chunks) before running another Home Assistant request. Prefetch
+    // immediately for short sentences that end sooner than this threshold.
+    // This keeps sentence overlap without competing with critical startup
+    // chunk traffic.
+    if(!startedNextPrep && (streamedAdpcm>=3000 || last)){
+      startedNextPrep=true;
       prefetchNextBridgeSentence(gen);
     }
     // Segment boundaries are NOT sentence boundaries. The Bluetooth sender
@@ -1518,7 +1522,7 @@ function startTTSFetchLoop(gen) {
 // below the physical 16 KiB ring. Never wait a fixed 175 ms after each ACK:
 // that added BLE callback time on top of the audio transmission budget.
 var bleFlowGeneration=-1,bleFlowSent=0,bleFlowStartedAt=0;
-var BLE_PLAYBACK_BPS=4000,BLE_PREBUFFER_BYTES=2100,BLE_SAFE_QUEUE_BYTES=7500;
+var BLE_PLAYBACK_BPS=4000,BLE_PREBUFFER_BYTES=2800,BLE_SAFE_QUEUE_BYTES=9000;
 function bleAudioQueueEstimate(now){
   if(!bleFlowStartedAt)return bleFlowSent;
   return Math.max(0,bleFlowSent-
@@ -1610,7 +1614,10 @@ function startBLESendLoop() {
         { 'COMMAND': 'AUDIO_SENTENCE_END' },
         function() { 
             isSendingBLE = false; 
-            setTimeout(function(){startBLESendLoop();conversationMaybeCompleteAudio();}, 120); 
+            // No fixed delay between complete spoken sentences: the watch
+            // already has a PCM ring and double buffering to smooth handoff.
+            startBLESendLoop();
+            conversationMaybeCompleteAudio(); 
         },
         function() {
             if(++failureCount>=5){audioSendFailed();return;}
