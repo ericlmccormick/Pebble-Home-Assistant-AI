@@ -4,10 +4,8 @@
 
 #include <pebble.h>
 #include "ha_audio.h"
-// True continuous conversation requires Pebble SDK revision 110+.
-// This branch intentionally targets the native MicStream API rather than
-// pretending system dictation can provide an always-open microphone.
-// Do not build this branch with CloudPebble's older SDK.
+// Plugin-only input uses PebbleOS dictation. Native raw-mic streaming is
+// intentionally disabled until the Bridge exposes a plugin audio-stream API.
 #define HA_ENABLE_NATIVE_MIC_STREAM 0
 
 #define MAX_TEXT_LENGTH 2048
@@ -73,10 +71,9 @@ static char s_ha_text[MAX_TEXT_LENGTH];
 // =========================================================================
 // SECTION 3: Volume UI
 #ifdef PBL_SPEAKER
-static TextLayer *s_volume_text_layer,*s_volume_up_hint_layer,*s_volume_down_hint_layer;
+static TextLayer *s_volume_text_layer;
 static AppTimer *s_volume_timer=NULL;
 static float s_volume=1.0f;
-#define PERSIST_KEY_VOLUME 100
 #endif
 // SECTION 4: FUNCTION PROTOTYPES & FORWARD DECLARATIONS
 // =========================================================================
@@ -543,7 +540,7 @@ static void inbox_received_callback(DictionaryIterator *iterator, void *context)
   else if(strcmp(command_tuple->value->cstring,"CONV_AUDIO_END")==0) {
     // The BLE sender completed; do not listen until speaker buffer drains.
     if(s_conversation_mode) {
-s_conversation_audio_complete=true;
+        s_conversation_audio_complete=true;
         conversation_schedule_resume();
     }
   }
