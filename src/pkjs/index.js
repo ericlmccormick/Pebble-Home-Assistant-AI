@@ -73,6 +73,8 @@ var clayConfig = [
       description:'On: display text and play spoken responses when TTS is configured. Off: text only.'},
     {type:'toggle',messageKey:'AUTO_SEND',label:'Send speech without confirmation',defaultValue:autoSend,
       description:'Send recognized words automatically; show them while waiting. Native speech error dialogs remain enabled.'},
+    {type:'toggle',messageKey:'TEST_HA_TTS_16K',label:'Test Home Assistant TTS (16 kHz source)',defaultValue:false,
+      description:'On Save: synthesize a known spoken phrase from the selected Bridge TTS engine with cache off and 16 kHz PCM requested, then resample through the bridge and play. Compare with normal 8 kHz TTS.'},
     {type:'toggle',messageKey:'TEST_BRIDGE_AUDIO',label:'Test audio through bridge (440 Hz)',defaultValue:false,
       description:'On Save: retrieve a reference tone using the bridge WAV/session/chunk interface and play it through the normal Gemini encoder and Pebble speaker, without calling Home Assistant TTS.'},
     {type:'toggle',messageKey:'TEST_AUDIO_PATH',label:'Test watch audio (440 Hz tone)',defaultValue:false,
@@ -301,7 +303,8 @@ Pebble.addEventListener('webviewclosed',function(e) {
     localStorage.setItem('FONT_SIZE',String(fontSize));
   }
   sendWatchSettings(preview);
-  if(s.TEST_BRIDGE_AUDIO && s.TEST_BRIDGE_AUDIO.value)runBridgeAudioTest();
+  if(s.TEST_HA_TTS_16K && s.TEST_HA_TTS_16K.value)runHATtsSourceTest();
+  else if(s.TEST_BRIDGE_AUDIO && s.TEST_BRIDGE_AUDIO.value)runBridgeAudioTest();
   else if(s.TEST_AUDIO_PATH && s.TEST_AUDIO_PATH.value)runWatchAudioTest();
 });
 function sendWatchSettings(preview) {
@@ -319,6 +322,30 @@ Pebble.addEventListener('ready',function() {sendWatchSettings(false);});
 // -> 3-sample filter -> 4-bit IMA ADPCM -> 700B BLE -> watch decoder path.
 // A clean tone proves that chain can reproduce a known signal independently
 // of Home Assistant and the bridge's WAV handling.
+function runHATtsSourceTest(){
+  if(!hasSpeaker){errText('This Pebble has no supported speaker');return;}
+  if(!useHaPlugin){errText('Enable Home Assistant plugin mode for TTS source test');return;}
+  var gen=++requestGeneration;
+  sentenceQueue=[];readyAudioQueue=[];
+  isFetchingTTS=true;isSendingBLE=false;
+  js_adpcm_valpred=0;js_adpcm_index=0;
+  conversationAudioFinalPending=false;
+  lastAnswer='Home Assistant 16kHz source test: The quick brown fox jumps over the lazy dog.';
+  Pebble.sendAppMessage({COMMAND:'TEXT_RESPONSE_8_16',TEXT:lastAnswer},function(){
+    if(gen!==requestGeneration)return;
+    pluginFetchWav('The quick brown fox jumps over the lazy dog.',gen,false,{
+      source_rate:16000,diagnostic:true}).then(function(pcm){
+      if(gen!==requestGeneration)return;
+      readyAudioQueue.push(encodeADPCM(lowPassFilter(pcm)));
+      isFetchingTTS=false;
+      startBLESendLoop();
+    }).catch(function(err){
+      if(gen!==requestGeneration)return;
+      isFetchingTTS=false;
+      errText('HA TTS 16k source test: '+String(err.message||err));
+    });
+  });
+}
 function runBridgeAudioTest(){
   if(!hasSpeaker){errText('This Pebble has no supported speaker');return;}
   if(!useHaPlugin){errText('Enable Home Assistant plugin mode to test bridge audio');return;}
@@ -1013,9 +1040,13 @@ function pluginResult(result,context){
 // Match Gemini's default audio pipeline exactly: plugin supplies WAV
 // containing signed 8kHz mono PCM16; the phone low-pass filters and encodes
 // 4-bit IMA ADPCM, then sends 700-byte packets to the watch.
-function pluginFetchWav(sentence,gen,testTone){
+function pluginFetchWav(sentence,gen,testTone,options){
   var session=null,expectedChecksum=null;
   var args=testTone?{test_tone:true}:{text:sentence};
+  if(options){
+    if(options.source_rate)args.source_rate=options.source_rate;
+    if(options.diagnostic)args.diagnostic=true;
+  }
   return pluginAction('tts_prepare',args).then(function(result){
     var meta=pluginResult(result,'TTS preparation');
     if(meta.format!=='pcm_s16le_wav'||meta.sample_rate!==8000||
