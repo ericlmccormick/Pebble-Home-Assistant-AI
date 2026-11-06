@@ -171,7 +171,7 @@ function replyError(message,legacy){
     if(legacy)Pebble.sendAppMessage({COMMAND:'CONV_MODE_STOP'});
   });
 }
-function askViaBridge(text,legacy){
+function askViaBridge(text,legacy,mute){
   var gen=++requestGeneration;
   legacyConversationTurn=!!legacy;
   audio.stop();
@@ -185,7 +185,7 @@ function askViaBridge(text,legacy){
       localStorage.setItem('HA_CONVERSATION_ID',conversationId);
     }
     lastAnswer=String(data.text||'No spoken response returned by Home Assistant.');
-    var speak=hasSpeaker&&enableTts;
+    var speak=hasSpeaker&&enableTts&&!mute;
     Pebble.sendAppMessage({
       COMMAND:speak?'TEXT_RESPONSE_8_16':'TEXT_RESPONSE_NO_AUDIO',
       TEXT:lastAnswer.substring(0,1900)
@@ -210,6 +210,5 @@ Pebble.addEventListener('appmessage',function(event){
   if(d.COMMAND!=='DICTATION'&&d.COMMAND!=='CONV_DICTATION')return;
   var legacy=d.COMMAND==='CONV_DICTATION';
   if(!d.TEXT){replyError('No dictation captured',legacy);return;}
-  if(d.VOLUME===0)enableTts=false;
-  askViaBridge(d.TEXT,legacy);
+  askViaBridge(d.TEXT,legacy,d.VOLUME===0);
 });
