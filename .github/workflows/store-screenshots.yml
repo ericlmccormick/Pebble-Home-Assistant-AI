@@ -1,0 +1,104 @@
+name: Store screenshots for supported Pebble watches
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'resources/**'
+      - 'images/**'
+      - 'package.json'
+      - '.github/workflows/store-screenshots.yml'
+permissions:
+  contents: read
+jobs:
+  capture:
+    name: Screenshot ${{ matrix.platform }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {platform: basalt, width: 144, height: 168}
+          - {platform: chalk, width: 180, height: 180}
+          - {platform: diorite, width: 144, height: 168}
+          - {platform: emery, width: 200, height: 228}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: false
+      - name: Validate supported platform
+        env:
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          node -e "if(!require('./package.json').pebble.targetPlatforms.includes(process.env.PLATFORM)) process.exit(1)"
+      - name: Install Pebble SDK and emulator dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libsdl2-2.0-0 libglib2.0-0 libpixman-1-0 zlib1g libsndio7.0
+          uv tool install pebble-tool
+          pebble sdk install 4.44
+          pebble sdk activate 4.44
+      - name: Build actual watch application
+        run: |
+          node --check src/pkjs/index.js
+          pebble build
+      - name: Launch headless emulator and capture initial app screen
+        env:
+          PLATFORM: ${{ matrix.platform }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p store-screenshots
+          timeout 150s pebble install --emulator "$PLATFORM" --vnc
+          sleep 4
+          timeout 90s pebble screenshot --no-open --emulator "$PLATFORM" --vnc "store-screenshots/home-assistant-ai-$PLATFORM.png"
+      - name: Validate PNG and native screen resolution
+        env:
+          PLATFORM: ${{ matrix.platform }}
+          WIDTH: ${{ matrix.width }}
+          HEIGHT: ${{ matrix.height }}
+        run: |
+          python3 - <<'PY'
+          import os,struct
+          from pathlib import Path
+          p=Path('store-screenshots')/('home-assistant-ai-'+os.environ['PLATFORM']+'.png')
+          data=p.read_bytes()
+          assert data[:8]==bytes((137,80,78,71,13,10,26,10))
+          assert data[12:16]==b'IHDR'
+          w,h=struct.unpack('>II',data[16:24])
+          assert (w,h)==(int(os.environ['WIDTH']),int(os.environ['HEIGHT'])),(w,h)
+          assert len(data)>250
+          print('Verified screenshot',p,w,h,len(data))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: screenshot-${{ matrix.platform }}
+          path: store-screenshots/*.png
+          if-no-files-found: error
+          retention-days: 90
+  bundle:
+    name: Bundle all store screenshots
+    runs-on: ubuntu-24.04
+    needs: capture
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: screenshot-*
+          merge-multiple: true
+          path: store-screenshots
+      - name: Require all four supported platforms
+        run: |
+          test "$(find store-screenshots -maxdepth 1 -name '*.png' | wc -l)" -eq 4
+          ls -lh store-screenshots
+      - uses: actions/upload-artifact@v4
+        with:
+          name: home-assistant-ai-store-screenshots
+          path: store-screenshots/*.png
+          retention-days: 90
+          if-no-files-found: error
