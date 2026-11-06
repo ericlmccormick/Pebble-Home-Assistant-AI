@@ -90,7 +90,7 @@ var clayConfig = [
       description:'Clear stored Home Assistant conversation ID'}
   ]},
   {type:'section',items:[
-    {type:'heading',defaultValue:'Last TTS diagnostics'},
+    {type:'heading',defaultValue:'Last Bridge TTS diagnostics (built-in requests not recorded)'},
     {type:'text',id:'pcm_debug_display',
       defaultValue:'No TTS diagnostics captured yet. Ask Home Assistant a question, then reopen these settings.'}
   ]},
@@ -246,7 +246,9 @@ function formatPcmDiagnostics() {
   if(!data)return 'No TTS diagnostics captured yet. Ask Home Assistant a question and reopen Settings.';
   try {
     var o=JSON.parse(data);
-    var lines=['Captured: '+String(o.timestamp||'unknown'),
+    var lines=['Current connection: '+(useHaPlugin?'Bridge plugin':'Built-in direct'),
+      'These measurements are from the most recent Bridge request only.',
+      'Captured: '+String(o.timestamp||'unknown'),
       'Transfer: '+String(o.transfer||'pending')];
     if(o.source)lines.push('Source: '+o.source);
     if(o.requested_rate)lines.push('Requested rate: '+o.requested_rate+' Hz');
