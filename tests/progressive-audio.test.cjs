@@ -21,10 +21,19 @@ const hash=bytes=>{
   for(const b of bytes)h=Math.imul((h^b)>>>0,16777619)>>>0;
   return h;
 };
+const tables=src.slice(src.indexOf('var stepTable = ['),
+  src.indexOf('// Clay can serialize'));
+const encoderSource=src.slice(src.indexOf('function encodeADPCM(pcm16)'),
+  src.indexOf('function lowPassFilter(samples)'));
+function freshEncoder(){
+  return vm.runInNewContext(tables+
+    '\nvar js_adpcm_valpred=0,js_adpcm_index=0;\n'+
+    encoderSource+'\nencodeADPCM');
+}
 const samples=Array.from({length:32000},(_,i)=>
   Math.round(9000*Math.sin(2*Math.PI*430*i/8000)));
 const wav=makeWav(samples);
-function newHarness(corrupt){
+function newHarness(corrupt,encoder){
   const chunks=[];
   for(let i=0;i<wav.length;i+=6000)
     chunks.push({offset:i,bytes:wav.subarray(i,Math.min(wav.length,i+6000))});
@@ -40,7 +49,7 @@ function newHarness(corrupt){
     pluginResult:(r)=>r.data,
     pluginDecodeBase64:b64=>Array.from(Buffer.from(b64,'base64')),
     pluginWavChecksum:hash,
-    encodeADPCM:pcm=>pcm.slice(), // Inspect the exact PCM samples and filter state.
+    encodeADPCM:encoder||((pcm)=>pcm.slice()), // Optional actual IMA ADPCM encoder.
     pluginAction:(name,args)=>{
       actions.push(name+(args.offset===undefined?'':':'+args.offset));
       if(name==='tts_release'){releases++;return Promise.resolve({data:{ok:true}});}
@@ -92,6 +101,11 @@ function newHarness(corrupt){
   for(const i of [0,1,2,2977,2978,2979,5977,5978,15000,31999])
     assert(Math.abs(pcm[i]-expected[i])<1e-7,
       'PCM filter continuity lost across chunk boundary at '+i);
+  const encoded=newHarness(-1,freshEncoder());
+  await encoded.run();
+  const expectedADPCM=Array.from(freshEncoder()(expected));
+  assert.deepStrictEqual(encoded.segments.flatMap(x=>x.pcm),expectedADPCM,
+    'Segmented IMA encoding must be bit-for-bit identical to one-shot Gemini encoding');
   assert.strictEqual(h.releases,1,'Release completed WAV session');
   assert(h.debug.first_audio_queued_ms>=0);
   assert.strictEqual(h.debug.transfer,'all streamed WAV chunks verified');
