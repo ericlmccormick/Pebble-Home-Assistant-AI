@@ -251,6 +251,9 @@ function formatPcmDiagnostics() {
       'Captured: '+String(o.timestamp||'unknown'),
       'Transfer: '+String(o.transfer||'pending')];
     if(o.source)lines.push('Source: '+o.source);
+    if(o.engine_id)lines.push('Bridge TTS engine: '+o.engine_id);
+    if(o.binary_transport)lines.push('Bridge binary download: '+o.binary_transport);
+    if(haTts)lines.push('Built-in TTS engine: '+haTts);
     if(o.requested_rate)lines.push('Requested rate: '+o.requested_rate+' Hz');
     if(o.input_rate)lines.push('Actual HA rate: '+o.input_rate+' Hz');
     if(o.input){
