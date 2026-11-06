@@ -21,9 +21,9 @@ function wav(sampleCount){
   return b;
 }
 const audio=wav(16000);
-function fixture(corrupt){
+function fixture(corrupt,failSecondPrepare){
   const storage={},calls=[],packets=[];
-  let complete=0,errors=[],current=0;
+  let complete=0,errors=[],current=0,secondPrepFailures=0;
   const store={getItem:k=>storage[k]||null,setItem:(k,v)=>{storage[k]=v}};
   const watch={
     sendAppMessage:(message,success)=>{
@@ -33,6 +33,8 @@ function fixture(corrupt){
       assert.strictEqual(plugin,'a74370b6-929c-4ec0-b7ee-2fc6fca8db57');
       calls.push({action,args});
       if(action==='tts_prepare'){
+        if(failSecondPrepare && args.text==='Second sentence.' && secondPrepFailures++===0)
+          return Promise.resolve({ok:false,message:'TTS audio HTTP 500'});
         current++;
         const first=audio.subarray(0,6000);
         return Promise.resolve({ok:true,text:JSON.stringify({
@@ -99,6 +101,18 @@ function until(predicate,timeout=2500){
   assert(prepares.length>=2,'Long unpunctuated speech must be split');
   assert(prepares.every(c=>c.args.text.length<=500),
     'Every Bridge TTS request must obey the 500-character limit');
+  // The second sentence's speculative preparation can fail while the first
+  // plays. A transient TTS HTTP 500 must retry rather than abort speech.
+  const recover=fixture(false,true);
+  await recover.client.speak('First sentence. Second sentence.');
+  await until(()=>recover.complete===1,5000);
+  const retryPreps=recover.calls.filter(c=>c.action==='tts_prepare' &&
+    c.args.text==='Second sentence.');
+  assert.strictEqual(retryPreps.length,2,
+    'Transient next-sentence 500 must retry once');
+  assert.strictEqual(recover.errors.length,0);
+  assert.strictEqual(recover.packets.filter(
+    p=>p.COMMAND==='AUDIO_SENTENCE_END').length,2);
   let restart=fixture(false);
   await restart.client.speak('Cancel now.');
   restart.client.stop();
