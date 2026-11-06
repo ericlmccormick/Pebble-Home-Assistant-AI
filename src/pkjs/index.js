@@ -34,6 +34,37 @@ var lastAnswer = '';
 // responses never monopolize the phone's JS heap.
 var sentenceQueue = [], readyAudioQueue = [];
 var MAX_READY_AUDIO_SENTENCES=2;
+// Bridge prepare runs one sentence ahead, but WAV chunk decode and ADPCM
+// encoding stay serial so predictor/filter state never interleaves sentences.
+var pluginPreparedSentence=null;
+function prefetchNextBridgeSentence(gen){
+  if(gen!==requestGeneration||pluginPreparedSentence||
+     !sentenceQueue.length)return;
+  var sentence=sentenceQueue.shift();
+  var entry={sentence:sentence,gen:gen,promise:null};
+  // Resolve failures as values to avoid unhandled rejections while the active
+  // sentence is still streaming. Surface them when this sentence is consumed.
+  entry.promise=pluginAction('tts_prepare',{text:sentence}).then(
+    function(result){return {result:result};},
+    function(error){return {error:error};}
+  );
+  pluginPreparedSentence=entry;
+}
+function consumePreparedBridgeSentence(gen){
+  if(pluginPreparedSentence&&pluginPreparedSentence.gen!==gen)
+    pluginPreparedSentence=null;
+  if(pluginPreparedSentence){
+    var selected=pluginPreparedSentence;
+    pluginPreparedSentence=null;
+    return {sentence:selected.sentence,prepared:selected.promise.then(function(value){
+      if(value.error)throw value.error;
+      return value.result;
+    })};
+  }
+  if(!sentenceQueue.length)return null;
+  return {sentence:sentenceQueue.shift(),prepared:null};
+}
+
 var isFetchingTTS = false, isSendingBLE = false, requestGeneration = 0;
 var js_adpcm_valpred = 0, js_adpcm_index = 0;
 var stepTable = [
@@ -847,7 +878,7 @@ function conversationShowReply(reply,gen) {
 }
 function conversationMaybeCompleteAudio() {
   if(!conversationAudioFinalPending || isFetchingTTS || isSendingBLE ||
-    sentenceQueue.length || readyAudioQueue.length)return;
+    sentenceQueue.length || readyAudioQueue.length || pluginPreparedSentence)return;
   conversationAudioFinalPending=false;
   Pebble.sendAppMessage({COMMAND:'CONV_AUDIO_END'});
 }
@@ -912,6 +943,7 @@ function askHomeAssistantViaPlugin(prompt,skipAudio,legacyTurn) {
       if(skipAudio){if(legacyTurn)Pebble.sendAppMessage({COMMAND:'CONV_RESUME'});return;}
       legacyConversationTurn=!!legacyTurn;
       sentenceQueue=[];readyAudioQueue=[];isFetchingTTS=false;isSendingBLE=false;
+      pluginPreparedSentence=null;
       js_adpcm_valpred=0;js_adpcm_index=0;
       if(legacyTurn)conversationAudioFinalPending=true;
       sentenceQueue=(answer.match(/[^.!?]+[.!?]*/g)||[answer])
@@ -1249,7 +1281,7 @@ function waitForStreamRoom(gen){
     check();
   });
 }
-function pluginStreamWav(sentence,gen,onPcm){
+function pluginStreamWav(sentence,gen,onPcm,prepared){
   var startedAt=Date.now(),preparedAt=0,session=null,expectedChecksum=0;
   var countSamples=0,prev1=0,prev2=0,rolling=2166136261>>>0;
   var firstPlaybackAt=0;
@@ -1361,7 +1393,7 @@ function pluginStreamWav(sentence,gen,onPcm){
       drain();
     });
   }
-  return pluginAction('tts_prepare',{text:sentence}).then(function(result){
+  return (prepared||pluginAction('tts_prepare',{text:sentence})).then(function(result){
     var meta=pluginResult(result,'TTS preparation');
     preparedAt=Date.now();
     if(meta.format!=='pcm_s16le_wav'||meta.sample_rate!==8000||
@@ -1406,20 +1438,29 @@ function pluginStreamWav(sentence,gen,onPcm){
 }
 
 function startPluginTTSFetchLoop(gen){
-  if(gen!==requestGeneration||isFetchingTTS||!sentenceQueue.length||
+  if(gen!==requestGeneration||isFetchingTTS||
+     (!sentenceQueue.length && !pluginPreparedSentence)||
      readyAudioQueue.length>=MAX_READY_AUDIO_SENTENCES){
     conversationMaybeCompleteAudio();return;
   }
+  var selected=consumePreparedBridgeSentence(gen);
+  if(!selected)return;
   isFetchingTTS=true;
-  var sentence=sentenceQueue.shift();
+  var sentence=selected.sentence,firstChunk=true;
   pluginStreamWav(sentence,gen,function(audio,last){
     if(gen!==requestGeneration)throw Error('TTS cancelled');
+    if(firstChunk){
+      firstChunk=false;
+      // The current sentence has usable audio: begin preparing the next
+      // sentence while its remaining chunks continue playing/transferring.
+      prefetchNextBridgeSentence(gen);
+    }
     // Segment boundaries are NOT sentence boundaries. The Bluetooth sender
     // must carry IMA predictor state continuously and emit sentence-end only
     // on the final verified WAV chunk.
     readyAudioQueue.push({bytes:audio,endSentence:last});
     if(!isSendingBLE)startBLESendLoop();
-  }).then(function(){
+  },selected.prepared).then(function(){
     if(gen!==requestGeneration)return;
     isFetchingTTS=false;
     if(!isSendingBLE)startBLESendLoop();
@@ -1430,6 +1471,7 @@ function startPluginTTSFetchLoop(gen){
     ++requestGeneration; // Invalidate any in-flight BLE packets.
     isFetchingTTS=false;isSendingBLE=false;
     readyAudioQueue=[];conversationAudioFinalPending=false;sentenceQueue=[];
+    pluginPreparedSentence=null;
     console.log('Home Assistant plugin TTS: '+String(error.message||error));
     Pebble.sendAppMessage({COMMAND:'TEXT_RESPONSE_NO_AUDIO',
       TEXT:(lastAnswer+'\\n\\nAudio error: '+String(error.message||error)).substring(0,1900)},
