@@ -3,15 +3,16 @@
 // =========================================================================
 
 #include <pebble.h>
+#include "ha_audio.h"
 // True continuous conversation requires Pebble SDK revision 110+.
 // This branch intentionally targets the native MicStream API rather than
 // pretending system dictation can provide an always-open microphone.
 // Do not build this branch with CloudPebble's older SDK.
-#define HA_ENABLE_NATIVE_MIC_STREAM 1
+#define HA_ENABLE_NATIVE_MIC_STREAM 0
 
 #define MAX_TEXT_LENGTH 2048
 // Compile only with an SDK that exports mic_stream_to_phone_start().
-#if defined(HA_ENABLE_NATIVE_MIC_STREAM) && defined(PBL_PLATFORM_EMERY) && defined(PBL_MICROPHONE) && !defined(PBL_SDK_FROZEN)
+#if HA_ENABLE_NATIVE_MIC_STREAM && defined(PBL_PLATFORM_EMERY) && defined(PBL_MICROPHONE) && !defined(PBL_SDK_FROZEN)
 #define HA_MIC_AVAILABLE 1
 #else
 #define HA_MIC_AVAILABLE 0
@@ -70,64 +71,13 @@ static char s_thinking_transcript[256];
 static char s_ha_text[MAX_TEXT_LENGTH];     
 
 // =========================================================================
-// SECTION 3: SPEAKER INFRASTRUCTURE VARIABLES & TABLES (SPEAKER ONLY)
-// =========================================================================
-
+// SECTION 3: Volume UI
 #ifdef PBL_SPEAKER
-  static TextLayer *s_volume_text_layer;        
-  static float s_volume = 1.0f;                 
-  static AppTimer *s_volume_timer = NULL;       
-  static uint8_t s_ring_buffer[RING_BUFFER_SIZE]; 
-  static uint32_t s_head = 0;                   
-  static uint32_t s_tail = 0;                   
-  static uint32_t s_buffer_count = 0;           
-  static AppTimer *s_playback_timer = NULL;     
-  static AppTimer *s_stream_close_timer = NULL; 
-  static bool s_speaker_open = false;
-  // Preserve PCM bytes rejected by a full speaker queue; never drop a partial write.
-  // Ping-pong PCM frames: while one frame drains into the speaker stream,
-  // the next is already decoded from the ADPCM ring. The predictor remains
-  // continuous across both buffers and between consecutive sentences.
-  static int16_t s_pcm_frames[2][PLAYBACK_PCM_SAMPLES];
-  static uint32_t s_pcm_lengths[2] = {0,0};
-  static uint8_t s_pcm_read = 0;
-  static uint8_t s_pcm_write = 0;
-  static uint8_t s_pcm_queued = 0;
-  static bool s_sentence_end_pending = false;
-  static uint32_t s_pending_offset = 0;
-  // Playback counters are transmitted only once the speaker closes.
-  static bool s_audio_frame_written = false;
-  static bool s_audio_waiting = false;
-  static uint16_t s_audio_empty_events = 0;
-  static uint32_t s_audio_empty_ms = 0;
-  static uint16_t s_audio_partial_writes = 0;
-  static uint16_t s_audio_zero_writes = 0;
-  static uint16_t s_audio_frames_written = 0;
-  static uint32_t s_audio_max_queued = 0;           
-  static bool s_ignore_audio = false;           
-
-  static const int16_t stepTable[89] = {
-    7,8,9,10,11,12,13,14,16,17,19,21,23,25,28,31,
-    34,37,41,45,50,55,60,66,73,80,88,97,107,118,
-    130,143,157,173,190,209,230,253,279,307,337,
-    371,408,449,494,544,598,658,724,796,876,963,
-    1060,1166,1282,1411,1552,1707,1878,2066,2272,
-    2499,2749,3024,3327,3660,4026,4428,4871,5358,
-    5894,6484,7132,7845,8630,9493,10442,11487,
-    12635,13899,15289,16818,18500,20350,22385,
-    24623,27086,29794,32767
-  };
-
-  static const int8_t indexTable[16] = {
-    -1,-1,-1,-1,2,4,6,8,
-    -1,-1,-1,-1,2,4,6,8
-  };
-
-  static int32_t s_adpcm_valpred = 0;           
-  static int32_t s_adpcm_index = 0;             
+static TextLayer *s_volume_text_layer,*s_volume_up_hint_layer,*s_volume_down_hint_layer;
+static AppTimer *s_volume_timer=NULL;
+static float s_volume=1.0f;
+#define PERSIST_KEY_VOLUME 100
 #endif
-
-// =========================================================================
 // SECTION 4: FUNCTION PROTOTYPES & FORWARD DECLARATIONS
 // =========================================================================
 
@@ -211,260 +161,33 @@ static void update_text_layout() {
 }
 
 // =========================================================================
-// SECTION 6: IMA-ADPCM DECODER & HARDWARE SPEAKER MANAGEMENT (SPEAKER ONLY)
-// =========================================================================
-
+// SECTION 6: Volume controls — codec and playback are in ha_audio.c
 #ifdef PBL_SPEAKER
-  static void reset_adpcm_state() {
-    s_adpcm_valpred = 0;                        
-    s_adpcm_index = 0;                          
-  }
-
-  static int16_t decode_adpcm_to_16bit(uint8_t delta) {
-    int32_t step = stepTable[s_adpcm_index];     
-    int32_t vpdiff = step >> 3;                 
-
-    if (delta & 4) vpdiff += step;
-    if (delta & 2) vpdiff += (step >> 1);
-    if (delta & 1) vpdiff += (step >> 2);
-
-    if (delta & 8) s_adpcm_valpred -= vpdiff;
-    else s_adpcm_valpred += vpdiff;
-
-    if (s_adpcm_valpred > 32767) s_adpcm_valpred = 32767;
-    if (s_adpcm_valpred < -32768) s_adpcm_valpred = -32768;
-
-    s_adpcm_index += indexTable[delta];
-    if (s_adpcm_index < 0) s_adpcm_index = 0;     
-    if (s_adpcm_index > 88) s_adpcm_index = 88;   
-
-    return (int16_t)(s_adpcm_valpred * s_volume);
-  }
-
-  static void hide_volume_layer_callback(void *data) {
-    s_volume_timer = NULL;                      
-    layer_set_hidden(text_layer_get_layer(s_volume_text_layer), true); 
-  }
-
-  static void show_volume_indicator() {
-    static char vol_buf[16];                    
-    int percentage = (int)(s_volume * 100.0f + 0.5f); 
-    if (percentage > 100) percentage = 100;     
-    if (percentage < 0) percentage = 0;         
-
-    snprintf(vol_buf, sizeof(vol_buf), "Vol: %d%%", percentage); 
-    text_layer_set_text(s_volume_text_layer, vol_buf); 
-    layer_set_hidden(text_layer_get_layer(s_volume_text_layer), false); 
-
-    if (s_volume_timer) app_timer_cancel(s_volume_timer); 
-    s_volume_timer = app_timer_register(2000, hide_volume_layer_callback, NULL); 
-  }
-
-  static void playback_timer_callback(void *data); 
-  static void delayed_close_callback(void *data);  
-
-  static void cancel_close_timer() {
-    if (s_stream_close_timer) {
-      app_timer_cancel(s_stream_close_timer);   
-      s_stream_close_timer = NULL;              
-    }
-  }
-
-  static void schedule_close_timer() {
-    if (!s_stream_close_timer) {
-      s_stream_close_timer = app_timer_register(STREAM_CLOSE_DELAY_MS, delayed_close_callback, NULL); 
-    }
-  }
-
-  static void report_audio_stats(void) {
-    DictionaryIterator *iter=NULL;
-    if(app_message_outbox_begin(&iter)!=APP_MSG_OK||!iter)return;
-    char stats[144];
-    snprintf(stats,sizeof(stats),
-      "empty=%u,empty_ms=%lu,partial=%u,zero=%u,peak=%lu,frames=%u",
-      (unsigned)s_audio_empty_events,(unsigned long)s_audio_empty_ms,
-      (unsigned)s_audio_partial_writes,(unsigned)s_audio_zero_writes,
-      (unsigned long)s_audio_max_queued,(unsigned)s_audio_frames_written);
-    dict_write_cstring(iter,MESSAGE_KEY_COMMAND,"AUDIO_STATS");
-    dict_write_cstring(iter,MESSAGE_KEY_TEXT,stats);
-    app_message_outbox_send();
-  }
-  static void delayed_close_callback(void *data) {
-    s_stream_close_timer = NULL;                
-    if (s_buffer_count == 0 && s_pcm_queued == 0 && s_speaker_open) { 
-      speaker_stream_close();                   
-      s_speaker_open = false;
-      if(s_audio_frame_written)report_audio_stats();
-      s_audio_frame_written=false;
-      s_audio_waiting=false;
-      if(s_conversation_audio_complete){
-        s_conversation_audio_complete=false;
-        conversation_schedule_resume();
-      }
-    }
-  }
-
-  static void stop_audio(void);
-  static void push_to_ring_buffer(uint8_t *data, uint16_t length) {
-    // ADPCM has a stateful predictor. Dropping a single byte silently
-    // desynchronizes the entire remaining speech stream into noise.
-    if (length > RING_BUFFER_SIZE - s_buffer_count) {
-      APP_LOG(APP_LOG_LEVEL_ERROR,
-        "ADPCM ring overflow: queued=%lu incoming=%u capacity=%u",
-        (unsigned long)s_buffer_count, (unsigned)length, RING_BUFFER_SIZE);
-      stop_audio();
-      s_ignore_audio = true;
-      set_status("Audio overflow");
-      return;
-    }
-    for (uint16_t i = 0; i < length; i++) {
-      s_ring_buffer[s_tail] = data[i];
-      s_tail = (s_tail + 1) % RING_BUFFER_SIZE;
-      s_buffer_count++;
-    }
-    if(s_buffer_count>s_audio_max_queued)s_audio_max_queued=s_buffer_count;
-    cancel_close_timer();
-  }
-
-  static void start_playback() {
-    cancel_close_timer();                       
-    set_status(NULL);                           
-
-    if (!s_speaker_open) {                      
-      bool success = speaker_stream_open(SpeakerPcmFormat_8kHz_16bit, 100);
-      if (!success) {
-        APP_LOG(APP_LOG_LEVEL_ERROR, "Speaker failed to open"); 
-        return;
-      }
-      s_speaker_open = true;                    
-    }
-
-    if (!s_playback_timer) {                     
-      // The ring has already met the prebuffer threshold. The first
-      // PCM frame should begin immediately rather than waiting 200 ms.
-      s_playback_timer = app_timer_register(1, playback_timer_callback, NULL); 
-    }
-  }
-
-  // Decode ahead into the free PCM frame without writing to the speaker.
-  // Each 800 ADPCM bytes produces 200 ms of 8 kHz/16-bit PCM. A second
-  // buffer absorbs BLE callback jitter while the first frame is playing.
-  static void fill_pcm_frames(void) {
-    // Wait for a complete 200 ms frame to avoid repeatedly starving the
-    // speaker. Only decode a shorter final frame after sentence-end.
-    while (s_pcm_queued < 2 &&
-          (s_buffer_count >= PLAYBACK_ADPCM_BYTES ||
-           (s_sentence_end_pending && s_buffer_count > 0))) {
-      uint8_t slot = s_pcm_write;
-      uint16_t count = s_buffer_count < PLAYBACK_ADPCM_BYTES ?
-                         s_buffer_count : PLAYBACK_ADPCM_BYTES;
-      if(count<PLAYBACK_ADPCM_BYTES)s_sentence_end_pending=false;
-      for(uint16_t i=0;i<count;i++){
-        uint8_t value=s_ring_buffer[s_head];
-        s_head=(s_head+1)%RING_BUFFER_SIZE;
-        s_buffer_count--;
-        s_pcm_frames[slot][i*2]=decode_adpcm_to_16bit((value>>4)&15);
-        s_pcm_frames[slot][i*2+1]=decode_adpcm_to_16bit(value&15);
-      }
-      s_pcm_lengths[slot]=(uint32_t)count*4;
-      s_pcm_write^=1;
-      s_pcm_queued++;
-      // An exact multiple of frame size can finish without a short frame.
-      // Do not apply that sentence-end flag to the next spoken sentence.
-      if(s_buffer_count==0 && s_sentence_end_pending)
-        s_sentence_end_pending=false;
-    }
-  }
-
-  static void playback_timer_callback(void *data) {
-    s_playback_timer=NULL;
-    if(!s_speaker_open)return;
-    // Preserve any partially accepted PCM. Decode into the alternate frame
-    // and never overwrite a frame until the speaker accepts all its bytes.
-    fill_pcm_frames();
-    if(s_pcm_queued==0){
-      if(s_audio_frame_written){
-        if(!s_audio_waiting){
-          s_audio_waiting=true;
-          if(s_audio_empty_events<65535)s_audio_empty_events++;
-        }
-        s_audio_empty_ms+=20;
-      }
-      schedule_close_timer();
-      s_playback_timer=app_timer_register(20,playback_timer_callback,NULL);
-      return;
-    }
-    s_audio_waiting=false;
-    cancel_close_timer();
-    uint8_t slot=s_pcm_read;
-    uint32_t remaining=s_pcm_lengths[slot]-s_pending_offset;
-    uint32_t accepted=speaker_stream_write(
-      ((uint8_t*)s_pcm_frames[slot])+s_pending_offset,remaining);
-    if(accepted>remaining)accepted=remaining;
-    if(accepted<remaining && s_audio_partial_writes<65535)s_audio_partial_writes++;
-    if(!accepted && s_audio_zero_writes<65535)s_audio_zero_writes++;
-    if(accepted){
-      s_audio_frame_written=true;
-      if(s_audio_frames_written<65535)s_audio_frames_written++;
-    }
-    s_pending_offset+=accepted;
-    if(s_pending_offset<s_pcm_lengths[slot]){
-      s_playback_timer=app_timer_register(15,playback_timer_callback,NULL);
-      return;
-    }
-    s_pcm_lengths[slot]=0;
-    s_pending_offset=0;
-    s_pcm_read^=1;
-    s_pcm_queued--;
-    fill_pcm_frames();
-    // Pace full 200 ms frames to real-time playback; the short retry timer
-    // above is exclusively for a partial speaker write.
-    s_playback_timer=app_timer_register(PLAYBACK_INTERVAL_MS,
-                                        playback_timer_callback,NULL);
-  }
-
-  static void stop_audio() {
-    if (s_speaker_open) {
-      speaker_stream_close();                   
-      s_speaker_open = false;                   
-    }
-    if (s_playback_timer) {
-      app_timer_cancel(s_playback_timer);       
-      s_playback_timer = NULL;                  
-    }
-    cancel_close_timer();                       
-    s_buffer_count = 0;                         
-    s_head = 0;                                 
-    s_tail = 0;                                 
-    reset_adpcm_state();                        
-    s_pending_offset = 0;
-    s_pcm_read = 0;
-    s_pcm_write = 0;
-    s_pcm_queued = 0;
-    s_sentence_end_pending = false;
-    s_pcm_lengths[0] = 0;
-    s_pcm_lengths[1] = 0;
-    set_status(NULL);                           
-  }
-
-  static void up_volume_handler(ClickRecognizerRef recognizer, void *context) {
-    s_volume += 0.1f;                           
-    if (s_volume > 1.0f) s_volume = 1.0f;       
-    persist_write_int(PERSIST_KEY_VOLUME, (int)(s_volume * 100.0f + 0.5f)); 
-    ha_haptic();
-    show_volume_indicator();                    
-  }
-
-  static void down_volume_handler(ClickRecognizerRef recognizer, void *context) {
-    s_volume -= 0.1f;                           
-    if (s_volume < 0.0f) s_volume = 0.0f;       
-    persist_write_int(PERSIST_KEY_VOLUME, (int)(s_volume * 100.0f + 0.5f)); 
-    ha_haptic();
-    show_volume_indicator();                    
-  }
+static void hide_volume_layer_callback(void *data){
+  s_volume_timer=NULL;
+  if(s_volume_text_layer)layer_set_hidden(text_layer_get_layer(s_volume_text_layer),true);
+}
+static void show_volume_indicator(void){
+  static char buf[16];
+  snprintf(buf,sizeof(buf),"Vol: %d%%",(int)(100*s_volume+0.5f));
+  text_layer_set_text(s_volume_text_layer,buf);
+  layer_set_hidden(text_layer_get_layer(s_volume_text_layer),false);
+  if(s_volume_timer)app_timer_cancel(s_volume_timer);
+  s_volume_timer=app_timer_register(2000,hide_volume_layer_callback,NULL);
+}
+static void up_volume_handler(ClickRecognizerRef recognizer,void *context){
+  s_volume+=0.1f;if(s_volume>1)s_volume=1;
+  ha_audio_set_volume(s_volume);
+  persist_write_int(PERSIST_KEY_VOLUME,(int)(100*s_volume+0.5f));
+  ha_haptic();show_volume_indicator();
+}
+static void down_volume_handler(ClickRecognizerRef recognizer,void *context){
+  s_volume-=0.1f;if(s_volume<0)s_volume=0;
+  ha_audio_set_volume(s_volume);
+  persist_write_int(PERSIST_KEY_VOLUME,(int)(100*s_volume+0.5f));
+  ha_haptic();show_volume_indicator();
+}
 #endif
-
-
 #if HA_MIC_AVAILABLE
 // SDK 110+ handles Speex compression and Bluetooth microphone transfer.
 // The phone delivers decoded PCM16 via audiostream events.
@@ -566,7 +289,7 @@ static void native_mic_toggle(void) {
   }
 #ifdef PBL_SPEAKER
   s_ignore_audio = true;
-  stop_audio();
+  ha_audio_stop();
 #endif
   s_conversation_mode = true; s_native_waiting = false;
   native_send_command("MIC_MODE_ON");
@@ -583,6 +306,10 @@ static void native_mic_toggle(void) {
 static void conversation_resume_callback(void *context) {
   s_conversation_resume_timer = NULL;
   if (!s_conversation_mode || !s_dictation_fallback || s_conversation_dictating) return;
+  if(s_conversation_audio_complete){
+    if(ha_audio_is_playing()){conversation_schedule_resume();return;}
+    s_conversation_audio_complete=false;
+  }
   if (!s_dictation_session) {
     conversation_disable();
     set_status("Dictation unavailable");
@@ -627,38 +354,19 @@ static void conversation_disable(void) {
   // Do not leave a stale "listening" claim visible after a cancelled turn.
   set_status(NULL);
 }
-static void conversation_toggle(void) {
-  if (s_conversation_mode) {
-    conversation_disable();
-    set_ui_state(UI_STATE_IDLE);
-    set_status(NULL);
-    ha_haptic();
-    return;
+static void conversation_toggle(void){
+  if(s_conversation_mode){
+    conversation_disable();set_ui_state(UI_STATE_IDLE);ha_haptic();return;
   }
-#ifdef PBL_SPEAKER
-  s_ignore_audio = true;
-  stop_audio();
-#endif
-#if HA_MIC_AVAILABLE
-  native_mic_toggle();
-#else
-  // Other platforms retain one-shot dictation rather than claim hands-free.
-  set_status("Continuous microphone unavailable");
-  ha_haptic();
-#endif
+  ha_audio_stop();s_conversation_mode=true;s_dictation_fallback=true;
+  s_conversation_dictating=false;conversation_schedule_resume();ha_haptic();
 }
-
 // =========================================================================
 // SECTION 7: HARDWARE KEY BOARD REGISTRATION & INTERCEPT MAPPINGS
 // =========================================================================
 
 static void select_short_click_handler(ClickRecognizerRef recognizer, void *context) {
-  #ifdef PBL_SPEAKER
-  if (s_speaker_open || s_buffer_count > 0 || !s_ignore_audio) {
-    s_ignore_audio = true;                      
-    stop_audio();                               
-  }
-  #endif
+  if(ha_audio_is_playing())ha_audio_stop();
 #if HA_MIC_AVAILABLE
   // While in hands-free conversation, a short Select ends only this spoken
   // request. Do not leave conversation mode or open the system dictation UI.
@@ -710,10 +418,7 @@ static void exit_back_click_handler(ClickRecognizerRef recognizer, void *context
 }
 
 static void results_back_click_handler(ClickRecognizerRef recognizer, void *context) {
-  #ifdef PBL_SPEAKER
-    s_ignore_audio = true;
-    stop_audio();
-  #endif
+  ha_audio_stop();
   conversation_disable();
   set_status(NULL);
   set_ui_state(UI_STATE_IDLE);
@@ -802,6 +507,12 @@ static void set_ui_state(UIState state) {
 // =========================================================================
 
 static void inbox_received_callback(DictionaryIterator *iterator, void *context) {
+  if(ha_audio_handle_message(iterator)){
+    Tuple *cmd=dict_find(iterator,MESSAGE_KEY_COMMAND);
+    if(cmd && cmd->value && cmd->value->cstring &&
+      !strcmp(cmd->value->cstring,"AUDIO_CHUNK"))set_status(NULL);
+    return;
+  }
   Tuple *command_tuple = dict_find(iterator, MESSAGE_KEY_COMMAND); 
   if (!command_tuple) return;                   
 
@@ -809,19 +520,8 @@ static void inbox_received_callback(DictionaryIterator *iterator, void *context)
     #if HA_MIC_AVAILABLE
       if(s_conversation_mode) {s_native_waiting=true;native_mic_stop();}
     #endif 
-    #ifdef PBL_SPEAKER
-    bool no_audio = false;
-      // MULTIPLEXING INTERCEPT: Determine if the phone told us to expect audio chunks
-      if (strcmp(command_tuple->value->cstring, "TEXT_RESPONSE_NO_AUDIO") == 0) {
-        no_audio = true;
-        // A later progressive WAV chunk can fail after earlier audio played.
-        // Stop queued speaker frames immediately; never continue a partial
-        // or potentially corrupt ADPCM stream following an error.
-        stop_audio();
-        s_ignore_audio = true;
-      }
-    #endif
-
+    bool no_audio=strcmp(command_tuple->value->cstring,"TEXT_RESPONSE_NO_AUDIO")==0;
+    if(no_audio)ha_audio_stop();
     Tuple *text_tuple = dict_find(iterator, MESSAGE_KEY_TEXT); 
     if (text_tuple) {
       snprintf(s_ha_text, sizeof(s_ha_text), "%s", text_tuple->value->cstring); 
@@ -831,49 +531,11 @@ static void inbox_received_callback(DictionaryIterator *iterator, void *context)
       
       set_ui_state(UI_STATE_RESULTS);          
 
-      #ifdef PBL_SPEAKER
-        if (no_audio) {
-          set_status(NULL);                     // Immediately clear status strip if no audio is expected (text-only mode)
-        } else {
-          s_ignore_audio = false;
-          s_audio_frame_written=false;
-          s_audio_waiting=false;
-          s_audio_empty_events=0;
-          s_audio_empty_ms=0;
-          s_audio_partial_writes=0;
-          s_audio_zero_writes=0;
-          s_audio_max_queued=0;
-          s_audio_frames_written=0;
-          reset_adpcm_state();                  
-          if (s_volume > 0.01f) {
-            set_status("Buffering Audio...");   
-          } else {
-            set_status(NULL);                   
-          }
-        }
-      #else
-        set_status(NULL);                       
-      #endif
+      if(no_audio)set_status(NULL);
+        else set_status("Buffering Audio...");
+        
     }
   } 
-  
-  #ifdef PBL_SPEAKER
-  else if (strcmp(command_tuple->value->cstring, "AUDIO_CHUNK") == 0) { 
-    if (s_ignore_audio) return;                 
-    Tuple *chunk_tuple = dict_find(iterator, MESSAGE_KEY_CHUNK); 
-    if (chunk_tuple) {
-      push_to_ring_buffer(chunk_tuple->value->data, chunk_tuple->length); 
-      if (!s_speaker_open && s_buffer_count >= START_BUFFER_THRESHOLD) start_playback();
-    }
-  } else if (strcmp(command_tuple->value->cstring, "AUDIO_SENTENCE_END") == 0) {
-    if (s_ignore_audio) return;
-    // There is no partial tail if the ring has already been decoded into
-    // the two PCM frames. In that case, do not carry end-of-sentence state
-    // into the next packet from the following sentence.
-    s_sentence_end_pending=(s_buffer_count>0);
-    if (!s_speaker_open && s_buffer_count > 0) start_playback();
-  } 
-  #endif
   
   else if(strcmp(command_tuple->value->cstring,"CONV_RESUME")==0) {
     if(s_conversation_mode) conversation_schedule_resume();
@@ -881,15 +543,8 @@ static void inbox_received_callback(DictionaryIterator *iterator, void *context)
   else if(strcmp(command_tuple->value->cstring,"CONV_AUDIO_END")==0) {
     // The BLE sender completed; do not listen until speaker buffer drains.
     if(s_conversation_mode) {
-#ifdef PBL_SPEAKER
-      if (s_ignore_audio || (!s_speaker_open && s_buffer_count == 0)) {
+s_conversation_audio_complete=true;
         conversation_schedule_resume();
-      } else {
-        s_conversation_audio_complete = true;
-      }
-#else
-      conversation_schedule_resume();
-#endif
     }
   }
     else if (strcmp(command_tuple->value->cstring, "SETTINGS") == 0) {
@@ -1155,7 +810,7 @@ static void main_window_load(Window *window) {
 static void main_window_unload(Window *window) {
   conversation_disable();
   #ifdef PBL_SPEAKER
-    stop_audio();                               
+    ha_audio_stop();                               
     if (s_volume_timer) app_timer_cancel(s_volume_timer); 
     text_layer_destroy(s_volume_text_layer);
     #if !defined(PBL_ROUND)
@@ -1185,9 +840,11 @@ static void main_window_unload(Window *window) {
 // =========================================================================
 
 static void init() {
+  ha_audio_init();
   #ifdef PBL_SPEAKER
     if (persist_exists(PERSIST_KEY_VOLUME)) s_volume = persist_read_int(PERSIST_KEY_VOLUME) / 100.0f;
-    else s_volume = 1.0f; 
+    else s_volume = 1.0f;
+    ha_audio_set_volume(s_volume);
   #endif
   
   app_message_register_inbox_received(inbox_received_callback);
@@ -1206,7 +863,8 @@ static void init() {
 }
 
 static void deinit() { 
-  window_destroy(s_main_window);                
+  window_destroy(s_main_window);
+  ha_audio_deinit();                
 }
 
 int main(void) { 
