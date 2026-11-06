@@ -44,6 +44,13 @@ var stepTable = [
   24623,27086,29794,32767
 ];
 var indexTable = [-1,-1,-1,-1,2,4,6,8,-1,-1,-1,-1,2,4,6,8];
+// Clay can serialize toggle values as booleans, strings or numbers.
+// Boolean('false') is true, so normalize explicitly on every boundary.
+function clayBoolean(value, fallback) {
+  if(value===true||value===1||value==='true'||value==='1'||value==='on')return true;
+  if(value===false||value===0||value==='false'||value==='0'||value==='off')return false;
+  return !!fallback;
+}
 var clayConfig = [
   {type:'heading',defaultValue:'Home Assistant AI'},
   // Top-level mode switch: plugin is the default. Clay shows direct fields
@@ -109,7 +116,7 @@ function connectionModeClay() {
     var fields=['HA_URL','HA_TOKEN','HA_PIPELINE','HA_AGENT','HA_TTS'];
     var heading=page.getItemById('builtin_connection_heading');
     function updateVisibility() {
-      var show=!!toggle.get();
+      var show=clayBoolean(toggle.get(),!useHaPlugin);
       if(heading)heading[show?'show':'hide']();
       fields.forEach(function(key) {
         var item=page.getItemByMessageKey(key);
@@ -284,6 +291,8 @@ function refreshPcmDiagnostics() {
 }
 function configLoadThenOpen() {
   refreshPcmDiagnostics();
+  var modeItem=configField('USE_BUILTIN_CONNECTION');
+  if(modeItem)modeItem.defaultValue=!useHaPlugin;
   var generation=++configDiscoveryGeneration;
   // Always refresh the defaults. A previous dropdown must never hide a
   // missing provider after the HA instance or credentials change.
@@ -325,7 +334,7 @@ Pebble.addEventListener('webviewclosed',function(e) {
     return localStorage.getItem(name) || '';
   }
   if (s.USE_BUILTIN_CONNECTION && typeof s.USE_BUILTIN_CONNECTION.value!=='undefined') {
-    useHaPlugin=!s.USE_BUILTIN_CONNECTION.value;
+    useHaPlugin=!clayBoolean(s.USE_BUILTIN_CONNECTION.value,!useHaPlugin);
     localStorage.setItem('USE_HA_PLUGIN',useHaPlugin?'true':'false');
   }
   haUrl = saved('HA_URL','HA_URL').trim().replace(/\/+$/,'');
@@ -338,16 +347,16 @@ Pebble.addEventListener('webviewclosed',function(e) {
   haTts = saved('HA_TTS','HA_TTS').trim();
   haPipeline = saved('HA_PIPELINE','HA_PIPELINE').trim();
   conversationPipeline=haPipeline;
-  if (agentBefore !== haAgent || (s.RESET_CHAT && s.RESET_CHAT.value)) {
+  if (agentBefore !== haAgent || (s.RESET_CHAT && clayBoolean(s.RESET_CHAT.value,false))) {
     haConversationId = '';
     localStorage.removeItem('HA_CONVERSATION_ID');
   }
   if (s.ENABLE_TTS) {
-    enableTts = !!s.ENABLE_TTS.value;
+    enableTts = clayBoolean(s.ENABLE_TTS.value,enableTts);
     localStorage.setItem('ENABLE_TTS',enableTts?'true':'false');
   }
   if (s.AUTO_SEND) {
-    autoSend=!!s.AUTO_SEND.value;
+    autoSend=clayBoolean(s.AUTO_SEND.value,autoSend);
     localStorage.setItem('AUTO_SEND',autoSend?'true':'false');
   }
   var preview=false;
@@ -362,9 +371,9 @@ Pebble.addEventListener('webviewclosed',function(e) {
     localStorage.setItem('FONT_SIZE',String(fontSize));
   }
   sendWatchSettings(preview);
-  if(s.TEST_HA_TTS_16K && s.TEST_HA_TTS_16K.value)runHATtsSourceTest();
-  else if(s.TEST_BRIDGE_AUDIO && s.TEST_BRIDGE_AUDIO.value)runBridgeAudioTest();
-  else if(s.TEST_AUDIO_PATH && s.TEST_AUDIO_PATH.value)runWatchAudioTest();
+  if(s.TEST_HA_TTS_16K && clayBoolean(s.TEST_HA_TTS_16K.value,false))runHATtsSourceTest();
+  else if(s.TEST_BRIDGE_AUDIO && clayBoolean(s.TEST_BRIDGE_AUDIO.value,false))runBridgeAudioTest();
+  else if(s.TEST_AUDIO_PATH && clayBoolean(s.TEST_AUDIO_PATH.value,false))runWatchAudioTest();
 });
 function sendWatchSettings(preview) {
   Pebble.sendAppMessage({
