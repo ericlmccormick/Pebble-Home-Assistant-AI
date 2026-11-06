@@ -1,148 +1,43 @@
-# Home Assistant AI — Pebble watch app
+# Home Assistant AI — Pebble watch app (Bridge-only)
 
-Home Assistant AI is a separate app built from the proven [Pebble Gemini](https://github.com/ericlmccormick/Pebble_Gemini) watch UI and ADPCM audio engine.
+Home Assistant AI is a Pebble watch interface for Home Assistant Assist, powered by the **Home Assistant Bridge plugin**. All Home Assistant network traffic, credentials, agent selection, TTS generation and WAV conversion are handled by the Bridge. The app does not contain a built-in/direct Home Assistant connection.
 
-**Uses Home Assistant for both the conversation agent and text-to-speech.** No Gemini API key and no Google TTS account are required.
+## Required installation
 
-## Build online using GitHub Actions (Windows, no local installation)
+1. Install and configure **[Home Assistant Bridge](https://github.com/ericlmccormick/Pebble-HA-plug-in)** v0.2.21 or newer in the Pebble mobile app.
+2. In **Bridge settings**, enter the Home Assistant HTTPS URL and long-lived token, choose the default conversation agent and TTS engine, and verify the connection.
+3. Install **[Home Assistant AI](https://github.com/ericlmccormick/Pebble-Home-Assistant-AI)** v0.3.0 or newer. Allow its HomeConverse and InvokeAction plugin permissions.
+4. Press **Select** to use PebbleOS dictation. Home Assistant's reply appears on the watch, with audio on Pebble watches that have speakers.
+5. In app Settings, configure audio on/off, automatic dictation submission, font size, vibration and optional conversation reset. Server credentials and TTS engine selection are managed **only in the Bridge**, not in this app.
 
-1. Open [Build Pebble App](https://github.com/ericlmccormick/Pebble-Home-Assistant-AI/actions/workflows/build-pebble.yml).
-2. Click **Run workflow** and choose `continuous-native-conversation`.
-3. Open the latest successful run, scroll to **Artifacts**, and download the
-   `pebble-home-assistant-ai-continuous-native-conversation-...` ZIP.
-4. Unzip it to obtain the `.pbw` app, then sideload it using the Pebble phone app.
+The long-press Select conversation mode uses **repeated system dictation**, not a continuous raw microphone stream; the Pebble plugin API does not yet expose an always-open, streamable microphone endpoint. The watch's speaker and audio codec remain native watch code imported from the shared SDK.
 
-The workflow installs the official Pebble CLI and latest application SDK on
-GitHub's Linux runner, builds all configured watch targets, and retains the
-download for 30 days. No Windows SDK or CloudPebble compiler is required.
-Automated compilation does not substitute for testing native microphone
-permissions, phone transport and audio/voice turn handling on a real watch.
+## Shared audio SDK
 
-## Setup
+The app uses the versioned **[Bridge Audio SDK](https://github.com/ericlmccormick/Pebble-HA-plug-in/tree/main/sdk)**:
 
-In Home Assistant, configure your preferred conversation agent and TTS entity, such as Piper. In your HA user profile create a long-lived access token. In Pebble app settings, enter:
+- `src/pkjs/ha_audio.js` — verified progressive WAV transfer, ADPCM encoding, next-sentence TTS prefetch and Bluetooth pacing.
+- `src/c/ha_audio.c` — watch 16-KiB ADPCM ring buffer, dual PCM frames, speaker flow control and playback telemetry.
+- `src/c/ha_audio.h` — the watch integration API.
 
-- **Home Assistant HTTPS URL**: the externally accessible HTTPS root, not the /api endpoint.
-- **Long-lived access token**: stored locally in the companion phone; never commit it.
-- **Conversation agent** (optional): for example `conversation.home_assistant`; leave blank to use HA's default conversation agent.
-- **TTS entity**: for example `tts.piper`. Select the same TTS provider/voice you configured in Home Assistant. The REST TTS endpoint does not automatically select the Assist pipeline's TTS entity.
-- Toggle **Speak responses on watch** to enable speech where the watch has a speaker.
-- Toggle **Text-only responses** to suppress audio regardless of TTS availability; responses still appear on the watch.
-- **Send speech without confirmation** defaults ON. Disable it if you want to review or retry a successfully transcribed phrase before sending.
-- **Vibration feedback** offers Off / Low (short pulse) / Medium (double pulse) / High (long pulse). Selecting a different level and **saving** the settings triggers a sample pulse on the watch; Clay cannot deliver live watch feedback during each dropdown change.
-- **Start new conversation** resets the stored conversation ID.
+The app's `src/pkjs/index.js` now contains only conversation UI, Bridge invocation, settings and SDK integration; it no longer duplicates the TTS decoder/transport. The watch's `src/c/main.c` delegates `AUDIO_*` messages to `ha_audio_handle_message()`.
 
-Watch dictation is transcribed by Pebble's normal dictation service. On successful transcription, the watch displays **You said:** and the recognized phrase on the **Thinking** screen while the request is processed, even when confirmation is disabled. Native dictation error dialogs and recognition retries remain enabled. Home Assistant handles intent/conversation via `POST /api/conversation/process`. The response text is passed back to Home Assistant `POST /api/tts_get_url`, requesting `wav`, mono, 8000 Hz, signed 16-bit PCM. The resulting `/api/tts_proxy/...` audio is downloaded, parsed as RIFF/WAV and compressed to IMA-ADPCM for transport to the watch.
+This app vendors a tested snapshot of the three SDK source files. Future protocol changes should update **all three files together**, and regression-test the native app before release.
 
-If your HA TTS provider cannot transcode to 8-kHz PCM WAV, the app will show text but playback may fail. HA uses FFmpeg for transcoding where supported.
+## Builds and direct PBW downloads
 
-## Dynamic Home Assistant service selectors
+The `continuous-native-conversation` branch publishes a rolling .pbw:
 
-When you open the Pebble app's settings, the phone uses the saved Home Assistant HTTPS URL and long-lived token to discover available voice providers:
+[Download Home Assistant AI (.pbw)](https://github.com/ericlmccormick/Pebble-Home-Assistant-AI/releases/download/dev-continuous-native-conversation/home-assistant-ai.pbw)
 
-- **Conversation agent (tap-to-talk)**: lists `conversation.*` entities from `GET /api/states`; select your Google AI agent explicitly so the watch interprets requests like your phone.
-- **Text-to-speech engine**: lists `tts.*` entities from `GET /api/states`. Select `tts.home_assistant_cloud` for the existing Cloud voice setup.
-- **Speech-to-text / Assist pipeline**: lists configured Assist pipelines through the authenticated WebSocket command `assist_pipeline/pipeline/list`. Each option shows its configured STT engine and conversation engine; this selection is used for the **experimental raw-microphone conversation mode**, not normal Pebble dictation.
+[Download Home Assistant Bridge (.pbw)](https://github.com/ericlmccormick/Pebble-HA-plug-in/releases/download/dev-latest/pebble-home-assistant-plugin.pbw)
 
-The setting values remain the real Home Assistant entity/pipeline IDs, not friendly names. Refresh the page to discover newly installed engines. If discovery fails, settings retain the previously saved values and revert to editable input fields. The phone must be able to reach your configured HTTPS Home Assistant URL. Saving a new URL/token requires opening the page again to refresh from that server.
+[View the app build workflow](https://github.com/ericlmccormick/Pebble-Home-Assistant-AI/actions/workflows/direct-pbw.yml)
 
-## Experimental full conversation mode (raw microphone)
+The build workflow runs plugin-only architecture, audio transport, and prefetch regression tests and compiles the native watch app. An actual Pebble Time 2 hardware smoke test is still recommended before public distribution.
 
-The full hands-free streaming pipeline is now implemented **behind the HA_ENABLE_RAW_MIC compile flag**. It is not enabled in the standard CloudPebble build because the SDK from the last user's compile log was 4.33.1 and the microphone capture API requires **PebbleOS SDK revision 111 and matching firmware**. A build passing with this flag OFF only proves that tap-to-talk still compiles.
+## Migration from v0.2.x
 
-When active, it works as follows:
+v0.3.0 intentionally removes the built-in Home Assistant URL/token and direct connections. Earlier app-local direct credentials are deleted on launch, while conversation ID, text-to-speech enabled state, font size, haptics and dictation preferences are preserved. Configure credentials and voice defaults **in the Bridge settings** before running the new app.
 
-1. **Tap Select** = the normal Pebble dictation-to-Home-Assistant path.
-2. **The published `main` build does not subscribe to Select long press.** This experimental flow is currently **unavailable** in the published app. Re-enabling it requires an SDK and firmware with raw microphone API support and a separate experimental build.
-3. The watch opens local raw microphone capture at 16,000 Hz, computes simple energy-based voice activity detection, keeps 200ms of preroll and waits for three 20ms speech frames.
-4. After speech begins, it compresses each frame to IMA ADPCM; two frames are sent per AppMessage (~320 bytes every 40ms) with sequence numbers and ACK-based pacing.
-5. After 1.3s of silence (or 22s max), it sends end-of-audio, and **stops recording** while Home Assistant processes the audio.
-6. The phone decodes PCM, authenticates to Home Assistant's `/api/websocket`, runs the preferred Assist pipeline from `stt` to `intent`, and retains the conversation ID across turns.
-7. It returns the text response to the watch, uses the existing Home Assistant TTS endpoint to synthesize spoken audio, and returns to listening **only after watch speaker playback ends**.
-8. Stopping the experimental session, exiting the app, or microphone permission revocation ends recording; if capability/permission is absent it reports unavailable instead of claiming to record.
-
-Speech audio is transmitted **only when local voice activity is detected**, rather than recording/transmitting silence constantly. It has no wake word, so any nearby conversation that triggers the VAD may be sent for transcription while the mode is active. Enable this mode only when you intend to be heard. This first-cut energy VAD can false-trigger in noise or miss unusually quiet speech.
-
-### Requirements to enable
-
-- Target watch running firmware supporting microphone capture SDK **revision 111 or newer** (not just Pebble SDK 4.x). An older firmware cannot run an app calling the newer function table.
-- Matching SDK with `mic_capture_start`, `mic_capture_stop`, `MicCaptureHandlers` and associated types.
-- A companion phone with its experimental microphone permission feature enabled, and explicit **Microphone** permission granted to this app. The manifest declares `manifestVersion: 2` and `usesPermissions: ["Microphone"]`. If the permission is denied the watch reports the mic unavailable.
-- Build with `HA_ENABLE_RAW_MIC` defined, e.g. uncomment `#define HA_ENABLE_RAW_MIC 1` immediately after `#include <pebble.h>` in `src/c/main.c`, or add `-DHA_ENABLE_RAW_MIC` to the C compilation flags on the compatible SDK. This must be done only when both SDK and firmware meet the API requirement.
-- The Home Assistant URL must be HTTPS and accessible to your phone. The watch app uses PebbleKit JS's WebSocket transport to `wss://<HA>/api/websocket`. Your preferred Assist pipeline must have STT and the desired Google AI conversation agent. The optional **Assist pipeline ID** setting selects a non-default pipeline.
-- `tts.home_assistant_cloud` remains the separate TTS entity for speaker playback. Thus the full pipeline runs STT + intent, while the existing dedicated TTS path handles 8 kHz PCM WAV conversion for the Pebble speaker.
-
-**Compatibility notice:** this code has not yet been built against SDK revision 111, tested with production firmware/permissions, or validated end-to-end over actual Bluetooth hardware. It is an implementation for that newer SDK, not a verified working firmware-independent feature. The normal build remains safe when `HA_ENABLE_RAW_MIC` is undefined.
-
-### Debugging
-
-This section refers **only to the experimental SDK 111 build** (not the normal main-branch app). Watch status `Listening...` indicates capture started; `Processing...` indicates a detected utterance has ended. A `Raw mic needs SDK 111` status means the build does not support raw capture. `Mic unavailable` indicates the SDK API refused to start (permission, busy, or unsupported firmware). On the phone, inspect `Home Assistant conversation:` errors for authentication, STT pipeline, timeout, audio packet loss, or socket failures.
-
-CI validates JS syntax, RIFF/WAV streaming audio parsing, a simulated Assist WebSocket session, and message-command contracts. It does **not** emulate hardware microphone recording, Bluetooth throughput, or the SDK revision 111 native compiler.
-
-## Reliability and retry behavior
-
-- The companion allows up to **20 seconds** for a Home Assistant conversation response. Timeouts produce an on-watch error rather than leaving the app on `Thinking...`.
-- HTTP 401/403 identifies authorization failures; 404 identifies an unavailable API/entity; 429 identifies throttling; 5xx identifies a server-side failure.
-- A device-control conversation is retried automatically only when Home Assistant explicitly rejects it with **429**. A timed-out or interrupted command is **not replayed automatically**, because the device may already have acted on it.
-- TTS URL generation and WAV retrieval have bounded retries for transient network/server failures; individual audio downloads have a **30-second timeout**.
-- Bluetooth audio delivery has a retry limit and falls back to showing the response as text if repeated audio transfers fail.
-- Failed dictation start, unavailable microphone, speech recognition failures, and watch-to-phone message queue failures show an on-watch error.
-- Text-only mode bypasses audio generation and playback.
-
-## Security
-
-Use a **valid HTTPS endpoint** accessible from the phone, including away from home if desired. The app rejects HTTP by default. The access token is stored in PebbleKit JS localStorage, not an OS secure keychain; grant it only the privileges necessary and keep the app private until reviewed. The TTS audio URL returned by HA may advertise an internal address; the app deliberately uses its relative proxy `path` against the configured HTTPS root, to avoid exposing or depending on LAN-only URLs.
-
-## Compatibility and limitations
-
-The original project's C dictation, scrolling, ADPCM speaker code and BLE chunk transport are retained. Voice playback is selected for Emery (Pebble Time 2) and Flint (Pebble 2 Duo) when available; other platforms receive text. The default build targets basalt, chalk, diorite, and emery, which are supported by the installed pebble-clay dependency. Flint and gabbro are temporarily excluded because pebble-clay 1.0.4 lacks their platform libraries. Supporting these platforms will require updating or replacing Clay, rather than simply adding them back to targetPlatforms. Experimental raw microphone capture remains unverified on hardware.
-
-Conversation and TTS entity dropdowns are dynamically discovered from Home Assistant when the settings page opens. The default build continues to use Pebble STT. The optional SDK 111 raw microphone build uses Home Assistant Assist WebSocket STT and the preferred (or explicitly configured) Assist pipeline.
-
-## Conversation mode on current CloudPebble
-
-The `native-mic-conversation` branch now supports an SDK-compatible
-**turn-by-turn conversation mode** without revision 110 microphone headers.
-On any supported watch, **long-press Select** to enter the mode. Pebble's
-normal dictation dialog listens for an utterance and produces text; the phone
-sends it to Home Assistant's configured conversation agent with the saved
-conversation ID. The watch displays or speaks the reply, then automatically
-opens dictation again after the text reply or speaker playback completes.
-**Long-press Select again** to turn the mode off when the watch UI is active;
-Back also exits conversation mode. A single Select continues to use ordinary
-one-shot dictation.
-
-This is an intentional compatibility fallback, not continuous raw microphone
-capture: Pebble's dictation UI appears on every turn, and speech recognition
-uses the phone's normal Pebble dictation service. The fallback is controlled
-by the absence of `HA_ENABLE_NATIVE_MIC_STREAM`. Enable that macro only with
-a compiler exporting PebbleOS SDK revision 110+; doing so switches to the
-native phone audio stream, WebSocket Assist STT and voice activity detection.
-Do not enable it in CloudPebble with the older SDK.
-
-The GitHub regression suite includes a legacy dictation conversation test.
-Hardware dictation and audio playback still require actual watch testing.
-
-## Manual tests
-
-1. Set the URL/token and ask the current time or light status.
-2. Follow up with "what about the kitchen?" to test conversation ID.
-3. Test new-conversation reset.
-4. Test HA command execution with a harmless light.
-5. Verify TTS PCM WAV output and speaker playback with a short reply and multiple sentences.
-6. Verify wrong token, disconnected network, and missing TTS entity fail safely.
-7. Verify both STT modes: auto-send without confirmation (recognized words visible on Thinking) and manual confirmation.
-8. Verify text-only mode, all four vibration levels, and the **sample pulse on saving a changed level**.
-9. Test a disconnected Home Assistant server and let the 20-second command timeout expire; check that an informative error appears and that no command is accidentally executed twice.
-10. Run regression checks and perform at least one actual CloudPebble build and device test before publication.
-
-References: https://developers.home-assistant.io/docs/intent_conversation_api/ and https://www.home-assistant.io/integrations/tts/
-
-
-## Home Assistant Bridge plugin
-
-The shared Home Assistant plugin now has its own repository:
-**https://github.com/ericlmccormick/Pebble-HA-plug-in**.
-
-Install the plugin-only PBW from that repository's **Build Home Assistant Plugin** GitHub Actions workflow, then configure its Home Assistant URL and token through the Pebble mobile app. The plugin UUID is unchanged (`a74370b6-929c-4ec0-b7ee-2fc6fca8db57`), so the optional provider toggle in this watchapp continues to reference the same plugin. Continuous microphone streaming and spoken TTS still use the built-in Home Assistant connection.
+For rollback, the previous implementation remains in older Git commits; installing an old PBW is not the recommended long-term method because it duplicates Home Assistant credentials and audio transport logic.
