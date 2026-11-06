@@ -34,6 +34,12 @@ This app vendors a tested snapshot of the three SDK source files. Future protoco
 
 Install the Bridge first, configure your Home Assistant credentials and voice defaults in its settings, then install the watch app and authorize its plugin permissions. The app itself never stores a Home Assistant access token.
 
+## Store screenshots
+
+The [Store screenshots GitHub Actions workflow](https://github.com/ericlmccormick/Pebble-Home-Assistant-AI/actions/workflows/store-screenshots.yml) builds this app and captures its initial screen in the emulator for every compatible platform declared in `package.json`: Pebble Time (`basalt`, 144×168), Pebble Time Round (`chalk`, 180×180), Pebble 2 (`diorite`, 144×168), and Pebble Time 2 (`emery`, 200×228).
+
+Open the workflow, choose **Run workflow** on `main`, then download the **home-assistant-ai-store-screenshots** artifact from a successful run. GitHub packages artifacts in ZIP files; extract the four native-resolution PNGs for the store. The workflow also runs automatically when watch source, resources, images, or the manifest change. Each emulator result is independently validated. Screenshots show the app's initial screen and do not require live Home Assistant service credentials.
+
 ## Migration from v0.2.x
 
 v1.0.0 removes the built-in Home Assistant URL/token and direct connections. Earlier app-local direct credentials are deleted on launch, while conversation ID, text-to-speech enabled state, font size, haptics and dictation preferences are preserved. Configure credentials and voice defaults **in the Bridge settings** before running the new app.
