@@ -291,6 +291,10 @@ function formatPcmDiagnostics() {
       lines.push('Bridge WAV storage: '+o.stage_ms.session_storage+' ms');
       lines.push('Bridge processing total: '+o.stage_ms.total_bridge+' ms');
     }
+    if(o.first_audio_queued_ms!==undefined)
+      lines.push('First audio queued: '+o.first_audio_queued_ms+' ms');
+    if(o.progressive_playback!==undefined)
+      lines.push('Progressive transfer: '+(o.progressive_playback?'yes':'no'));
     if(o.prepare_ms!==undefined)
       lines.push('TTS prepare: '+o.prepare_ms+' ms');
     if(o.chunk_transfer_ms!==undefined)
@@ -1296,31 +1300,65 @@ function pluginStreamWav(sentence,gen,onPcm){
       return onPcm(audio,last);
     });
   }
+  // Rolling three-request window. Fixed Promise.all batches had a barrier:
+  // one slow request held up the next three, even when another completed.
+  // Results are still decoded strictly in byte order, preserving the PCM
+  // filter and IMA predictor state. Never retain more than three outstanding
+  // offsets, even when the first of them is slow.
   function fetchParts(offset,length,step){
-    if(gen!==requestGeneration)throw Error('TTS cancelled');
-    if(offset>=length)return Promise.resolve();
-    var tasks=[],limit=Math.min(length,offset+step*3);
-    for(var at=offset;at<limit;at+=step){
-      (function(chunkOffset){
-        tasks.push(pluginAction('tts_chunk',{session_id:session,offset:chunkOffset})
-          .then(function(reply){
-            var p=pluginResult(reply,'TTS chunk');
-            var bytes=pluginDecodeBase64(String(p.audio||''));
-            if(p.offset!==chunkOffset||bytes.length!==Math.min(step,length-chunkOffset))
-              throw Error('Invalid streamed TTS audio chunk');
-            return {offset:chunkOffset,bytes:bytes,checksum:p.checksum};
-          }));
-      })(at);
-    }
-    return Promise.all(tasks).then(function(results){
-      // Requests can complete out of order; ADPCM must be encoded in order.
-      var chain=Promise.resolve();
-      results.forEach(function(part){
-        chain=chain.then(function(){
-          return useChunk(part.offset,part.bytes,part.checksum,length);
-        });
-      });
-      return chain.then(function(){return fetchParts(limit,length,step);});
+    return new Promise(function(resolve,reject){
+      var nextRequest=offset,nextEmit=offset,active=0,draining=false;
+      var finished=false,held={};
+      function fail(error){
+        if(finished)return;
+        finished=true;reject(error);
+      }
+      function schedule(){
+        if(finished)return;
+        if(gen!==requestGeneration){fail(Error('TTS cancelled'));return;}
+        while(active<3 && nextRequest<length &&
+              nextRequest-nextEmit<step*3){
+          (function(chunkOffset){
+            nextRequest+=step;active++;
+            pluginAction('tts_chunk',{
+              session_id:session,offset:chunkOffset
+            }).then(function(reply){
+              active--;
+              if(finished)return;
+              var p=pluginResult(reply,'TTS chunk');
+              var bytes=pluginDecodeBase64(String(p.audio||''));
+              if(p.offset!==chunkOffset ||
+                 bytes.length!==Math.min(step,length-chunkOffset))
+                throw Error('Invalid streamed TTS audio chunk');
+              held[chunkOffset]={offset:chunkOffset,bytes:bytes,
+                checksum:p.checksum};
+              drain();
+              schedule();
+            }).catch(fail);
+          })(nextRequest);
+        }
+      }
+      function drain(){
+        if(finished||draining)return;
+        if(gen!==requestGeneration){fail(Error('TTS cancelled'));return;}
+        var part=held[nextEmit];
+        if(!part){
+          if(nextEmit>=length && active===0){
+            finished=true;resolve();
+          }
+          return;
+        }
+        delete held[nextEmit];
+        draining=true;
+        useChunk(part.offset,part.bytes,part.checksum,length).then(function(){
+          nextEmit+=part.bytes.length;
+          draining=false;
+          schedule();
+          drain();
+        }).catch(fail);
+      }
+      schedule();
+      drain();
     });
   }
   return pluginAction('tts_prepare',{text:sentence}).then(function(result){
