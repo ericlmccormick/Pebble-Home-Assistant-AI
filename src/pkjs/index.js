@@ -1226,6 +1226,147 @@ function pluginFetchWav(sentence,gen,testTone,options){
     throw error;
   });
 }
+
+/**
+ * Progressive downstream bridge playback.
+ * The plugin host still buffers the upstream HTTP response (fetch has no
+ * readable stream). Once the bridge prepares a session, each authenticated
+ * 6000-byte chunk is verified and converted immediately to the existing
+ * Gemini ADPCM stream; we never wait to reconstruct the entire WAV.
+ */
+var MAX_PENDING_STREAM_SEGMENTS=8;
+function waitForStreamRoom(gen){
+  return new Promise(function(resolve,reject){
+    function check(){
+      if(gen!==requestGeneration){reject(Error('TTS cancelled'));return;}
+      if(readyAudioQueue.length<MAX_PENDING_STREAM_SEGMENTS){resolve();return;}
+      setTimeout(check,30);
+    }
+    check();
+  });
+}
+function pluginStreamWav(sentence,gen,onPcm){
+  var startedAt=Date.now(),preparedAt=0,session=null,expectedChecksum=0;
+  var countSamples=0,prev1=0,prev2=0,rolling=2166136261>>>0;
+  var firstPlaybackAt=0;
+  function updateDebug(fields){
+    var d={};
+    try{d=JSON.parse(localStorage.getItem(PCM_DEBUG_STORAGE_KEY)||'{}');}catch(e){}
+    for(var k in fields)if(Object.prototype.hasOwnProperty.call(fields,k))d[k]=fields[k];
+    localStorage.setItem(PCM_DEBUG_STORAGE_KEY,JSON.stringify(d));
+  }
+  function useChunk(offset,bytes,expected,length){
+    if(gen!==requestGeneration)throw Error('TTS cancelled');
+    if(!Number.isInteger(expected) ||
+       pluginWavChecksum(new Uint8Array(bytes))!==(expected>>>0))
+      throw Error('Bridge WAV chunk checksum mismatch at '+offset);
+    if((offset===0 && bytes.length<44) || (offset!==0 && offset%6000!==0))
+      throw Error('Invalid streamed WAV chunk alignment');
+    if(offset===0){
+      function tag(at){return String.fromCharCode(bytes[at],bytes[at+1],bytes[at+2],bytes[at+3]);}
+      if(tag(0)!=='RIFF'||tag(8)!=='WAVE'||tag(12)!=='fmt '||tag(36)!=='data'||
+         (bytes[20]|bytes[21]<<8)!==1 ||
+         (bytes[22]|bytes[23]<<8)!==1 ||
+         (bytes[24]|bytes[25]<<8|bytes[26]<<16|bytes[27]<<24)!==8000 ||
+         (bytes[34]|bytes[35]<<8)!==16)
+        throw Error('Invalid canonical Bridge PCM WAV header');
+    }
+    for(var h=0;h<bytes.length;h++)rolling=Math.imul((rolling^bytes[h])>>>0,16777619)>>>0;
+    var from=offset===0?44:0;
+    if((bytes.length-from)%2)throw Error('Unaligned PCM16 chunk');
+    var pcm=[];
+    for(var i=from;i<bytes.length;i+=2){
+      var sample=(bytes[i]|bytes[i+1]<<8);
+      if(sample>32767)sample-=65536;
+      var filtered=countSamples<2?sample:(sample+prev1+prev2)/3;
+      pcm.push(filtered);
+      prev2=prev1;prev1=sample;countSamples++;
+    }
+    if(pcm.length%2)throw Error('Odd PCM sample boundary in Bridge chunk');
+    var last=offset+bytes.length===length;
+    if(last && (rolling>>>0)!==expectedChecksum)
+      throw Error('Bridge WAV final checksum mismatch');
+    var audio=encodeADPCM(pcm);
+    return waitForStreamRoom(gen).then(function(){
+      if(!firstPlaybackAt){
+        firstPlaybackAt=Date.now();
+        updateDebug({first_audio_queued_ms:firstPlaybackAt-startedAt,
+          transfer:'streaming verified PCM chunks to watch'});
+      }
+      return onPcm(audio,last);
+    });
+  }
+  function fetchParts(offset,length,step){
+    if(gen!==requestGeneration)throw Error('TTS cancelled');
+    if(offset>=length)return Promise.resolve();
+    var tasks=[],limit=Math.min(length,offset+step*3);
+    for(var at=offset;at<limit;at+=step){
+      (function(chunkOffset){
+        tasks.push(pluginAction('tts_chunk',{session_id:session,offset:chunkOffset})
+          .then(function(reply){
+            var p=pluginResult(reply,'TTS chunk');
+            var bytes=pluginDecodeBase64(String(p.audio||''));
+            if(p.offset!==chunkOffset||bytes.length!==Math.min(step,length-chunkOffset))
+              throw Error('Invalid streamed TTS audio chunk');
+            return {offset:chunkOffset,bytes:bytes,checksum:p.checksum};
+          }));
+      })(at);
+    }
+    return Promise.all(tasks).then(function(results){
+      // Requests can complete out of order; ADPCM must be encoded in order.
+      var chain=Promise.resolve();
+      results.forEach(function(part){
+        chain=chain.then(function(){
+          return useChunk(part.offset,part.bytes,part.checksum,length);
+        });
+      });
+      return chain.then(function(){return fetchParts(limit,length,step);});
+    });
+  }
+  return pluginAction('tts_prepare',{text:sentence}).then(function(result){
+    var meta=pluginResult(result,'TTS preparation');
+    preparedAt=Date.now();
+    if(meta.format!=='pcm_s16le_wav'||meta.sample_rate!==8000||
+       meta.channels!==1||meta.bits_per_sample!==16||
+       !Number.isInteger(meta.length)||meta.length<44||
+       meta.length>1500000||meta.length%2!==0||
+       !meta.session_id||!Number.isInteger(meta.wav_checksum))
+      throw Error('Bridge streaming format mismatch');
+    if(meta.length!==44+meta.sample_count*2)
+      throw Error('Bridge streaming WAV length mismatch');
+    expectedChecksum=meta.wav_checksum>>>0;
+    session=String(meta.session_id);
+    var step=meta.chunk_bytes||6000;
+    if(step!==6000)throw Error('Unsupported streamed TTS chunk size');
+    var d=meta.audio_diagnostics||{};
+    d.timestamp=new Date().toISOString();
+    d.transfer='streaming verified PCM chunks to watch';
+    d.wav_length=meta.length;
+    d.prepare_ms=preparedAt-startedAt;
+    d.inlined_first_chunk=!!meta.first_chunk;
+    d.progressive_playback=true;
+    localStorage.setItem(PCM_DEBUG_STORAGE_KEY,JSON.stringify(d));
+    if(typeof meta.first_chunk!=='string' ||
+       !Number.isInteger(meta.first_chunk_checksum))
+      throw Error('Bridge does not support verified streaming chunks; update Bridge');
+    var first=pluginDecodeBase64(meta.first_chunk);
+    if(first.length!==Math.min(step,meta.length))
+      throw Error('Invalid first streamed WAV chunk');
+    return useChunk(0,first,meta.first_chunk_checksum,meta.length).then(function(){
+      return fetchParts(first.length,meta.length,step);
+    });
+  }).then(function(){
+    updateDebug({transfer:'all streamed WAV chunks verified',
+      chunk_transfer_ms:Date.now()-preparedAt,
+      total_wav_ms:Date.now()-startedAt});
+    if(session)pluginAction('tts_release',{session_id:session}).catch(function(){});
+  },function(e){
+    if(session)pluginAction('tts_release',{session_id:session}).catch(function(){});
+    updateDebug({transfer:'stream failed',error:String(e&&e.message||e).slice(0,120)});
+    throw e;
+  });
+}
+
 function startPluginTTSFetchLoop(gen){
   if(gen!==requestGeneration||isFetchingTTS||!sentenceQueue.length||
      readyAudioQueue.length>=MAX_READY_AUDIO_SENTENCES){
@@ -1233,16 +1374,24 @@ function startPluginTTSFetchLoop(gen){
   }
   isFetchingTTS=true;
   var sentence=sentenceQueue.shift();
-  pluginFetchWav(sentence,gen).then(function(pcm){
+  pluginStreamWav(sentence,gen,function(audio,last){
+    if(gen!==requestGeneration)throw Error('TTS cancelled');
+    // Segment boundaries are NOT sentence boundaries. The Bluetooth sender
+    // must carry IMA predictor state continuously and emit sentence-end only
+    // on the final verified WAV chunk.
+    readyAudioQueue.push({bytes:audio,endSentence:last});
+    if(!isSendingBLE)startBLESendLoop();
+  }).then(function(){
     if(gen!==requestGeneration)return;
-    readyAudioQueue.push(encodeADPCM(lowPassFilter(pcm)));
     isFetchingTTS=false;
     if(!isSendingBLE)startBLESendLoop();
     startPluginTTSFetchLoop(gen);
     conversationMaybeCompleteAudio();
   }).catch(function(error){
     if(gen!==requestGeneration)return;
-    isFetchingTTS=false;conversationAudioFinalPending=false;sentenceQueue=[];
+    ++requestGeneration; // Invalidate any in-flight BLE packets.
+    isFetchingTTS=false;isSendingBLE=false;
+    readyAudioQueue=[];conversationAudioFinalPending=false;sentenceQueue=[];
     console.log('Home Assistant plugin TTS: '+String(error.message||error));
     Pebble.sendAppMessage({COMMAND:'TEXT_RESPONSE_NO_AUDIO',
       TEXT:(lastAnswer+'\\n\\nAudio error: '+String(error.message||error)).substring(0,1900)},
@@ -1310,7 +1459,9 @@ function startBLESendLoop() {
   if (readyAudioQueue.length === 0) {conversationMaybeCompleteAudio();return;} 
   
   isSendingBLE = true; 
-  var adpcmBytes = readyAudioQueue.shift();
+  var nextSegment=readyAudioQueue.shift();
+  var endSentence=Array.isArray(nextSegment) || nextSegment.endSentence===true;
+  var adpcmBytes=Array.isArray(nextSegment)?nextSegment:nextSegment.bytes;
   // Opening a consumer slot lets the producer fetch/encode the next sentence
   // concurrently with Bluetooth playback. Both connection modes share this.
   if(useHaPlugin)startPluginTTSFetchLoop(requestGeneration);
@@ -1368,6 +1519,13 @@ function startBLESendLoop() {
         } 
       );
     } else {
+      if(!endSentence){
+        // More verified WAV chunks are still arriving. This is only a
+        // transport segment boundary, not a pause between sentences.
+        isSendingBLE=false;
+        startBLESendLoop();
+        return;
+      }
       Pebble.sendAppMessage(
         { 'COMMAND': 'AUDIO_SENTENCE_END' },
         function() { 
