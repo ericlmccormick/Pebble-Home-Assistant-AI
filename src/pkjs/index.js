@@ -83,6 +83,11 @@ var clayConfig = [
       description:'Clear stored Home Assistant conversation ID'}
   ]},
   {type:'section',items:[
+    {type:'heading',defaultValue:'Last TTS diagnostics'},
+    {type:'text',id:'pcm_debug_display',
+      defaultValue:'No TTS diagnostics captured yet. Ask Home Assistant a question, then reopen these settings.'}
+  ]},
+  {type:'section',items:[
     {type:'heading',defaultValue:'Display'},
     {type:'slider',messageKey:'FONT_SIZE',label:'Font size',defaultValue:fontSize,min:14,max:28,step:2},
     {type:'select',messageKey:'HAPTIC_LEVEL',label:'Vibration feedback',defaultValue:hapticLevel,
@@ -224,7 +229,53 @@ function configListPipelines() {
     } catch(error){done(error);}
   });
 }
+// Keep the diagnostic on the phone; opening settings displays the last speech
+// request without requiring a Pebble CLI, computer, or access to log files.
+var PCM_DEBUG_STORAGE_KEY='HA_PCM_DIAGNOSTICS_V1';
+function formatPcmDiagnostics() {
+  var data=localStorage.getItem(PCM_DEBUG_STORAGE_KEY);
+  if(!data)return 'No TTS diagnostics captured yet. Ask Home Assistant a question and reopen Settings.';
+  try {
+    var o=JSON.parse(data);
+    var lines=['Captured: '+String(o.timestamp||'unknown'),
+      'Transfer: '+String(o.transfer||'pending')];
+    if(o.source)lines.push('Source: '+o.source);
+    if(o.requested_rate)lines.push('Requested rate: '+o.requested_rate+' Hz');
+    if(o.input_rate)lines.push('Actual HA rate: '+o.input_rate+' Hz');
+    if(o.input){
+      lines.push('Input: peak '+o.input.peak+', RMS '+o.input.rms+
+        ', clipped '+o.input.clipped+', crossings '+o.input.zero_crossings+
+        ', duration '+o.input.duration_ms+' ms');
+    }
+    if(o.output){
+      lines.push('8k output: peak '+o.output.peak+', RMS '+o.output.rms+
+        ', clipped '+o.output.clipped+', crossings '+o.output.zero_crossings+
+        ', duration '+o.output.duration_ms+' ms');
+    }
+    if(o.declared_data_bytes!==undefined)
+      lines.push('WAV data: declared '+o.declared_data_bytes+
+        ' B; available '+o.available_data_bytes+
+        ' B; used '+o.used_data_bytes+' B');
+    if(o.wav_length)lines.push('WAV total length: '+o.wav_length+' B');
+    if(o.error)lines.push('Error: '+o.error);
+    // Clay text elements allow HTML; escape all received values.
+    return '<div style="white-space:pre-wrap;word-break:break-word;font-size:13px">'+
+      lines.join('\n').replace(/&/g,'&amp;').replace(/</g,'&lt;')
+        .replace(/>/g,'&gt;').replace(/"/g,'&quot;')+'</div>';
+  } catch(e) {return 'Unable to display the last diagnostics. Please repeat a TTS request.';}
+}
+function refreshPcmDiagnostics() {
+  for(var i=0;i<clayConfig.length;i++){
+    var section=clayConfig[i];
+    if(!section.items)continue;
+    for(var j=0;j<section.items.length;j++){
+      if(section.items[j].id==='pcm_debug_display')
+        section.items[j].defaultValue=formatPcmDiagnostics();
+    }
+  }
+}
 function configLoadThenOpen() {
+  refreshPcmDiagnostics();
   var generation=++configDiscoveryGeneration;
   // Always refresh the defaults. A previous dropdown must never hide a
   // missing provider after the HA instance or credentials change.
@@ -1058,7 +1109,14 @@ function pluginFetchWav(sentence,gen,testTone,options){
     if(!Number.isInteger(meta.wav_checksum))
       throw Error('Bridge lacks WAV integrity metadata; update bridge');
     expectedChecksum=meta.wav_checksum>>>0;
-    if(meta.audio_diagnostics)console.log('Bridge PCM diagnostics: '+JSON.stringify(meta.audio_diagnostics));
+    if(meta.audio_diagnostics){
+      console.log('Bridge PCM diagnostics: '+JSON.stringify(meta.audio_diagnostics));
+      var debug=meta.audio_diagnostics;
+      debug.timestamp=new Date().toISOString();
+      debug.transfer='retrieving WAV chunks';
+      debug.wav_length=meta.length;
+      localStorage.setItem(PCM_DEBUG_STORAGE_KEY,JSON.stringify(debug));
+    }
     session=String(meta.session_id);
     var length=meta.length,step=meta.chunk_bytes||6000;
     if(step!==6000)throw Error('Unsupported TTS chunk size');
@@ -1079,8 +1137,15 @@ function pluginFetchWav(sentence,gen,testTone,options){
   }).then(function(audio){
     if(session)pluginAction('tts_release',{session_id:session}).catch(function(){});
     var receivedChecksum=pluginWavChecksum(new Uint8Array(audio));
-    if(receivedChecksum!==expectedChecksum)
+    var saved={};
+    try{saved=JSON.parse(localStorage.getItem(PCM_DEBUG_STORAGE_KEY)||'{}');}catch(e){}
+    if(receivedChecksum!==expectedChecksum){
+      saved.transfer='FAILED: WAV checksum mismatch';
+      localStorage.setItem(PCM_DEBUG_STORAGE_KEY,JSON.stringify(saved));
       throw Error('TTS chunk checksum mismatch (data corrupted during plugin transfer)');
+    }
+    saved.transfer='WAV checksum verified; PCM decoded';
+    localStorage.setItem(PCM_DEBUG_STORAGE_KEY,JSON.stringify(saved));
     return wavToPcm(audio);
   },function(error){
     if(session)pluginAction('tts_release',{session_id:session}).catch(function(){});
