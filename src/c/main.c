@@ -355,14 +355,16 @@ static void set_ui_state(UIState state) {
 static void inbox_received_callback(DictionaryIterator *iterator, void *context) {
   if(ha_audio_handle_message(iterator)){
     Tuple *cmd=dict_find(iterator,MESSAGE_KEY_COMMAND);
-    if(cmd && cmd->value && cmd->value->cstring &&
-      !strcmp(cmd->value->cstring,"AUDIO_CHUNK"))set_status(NULL);
+    if(cmd && cmd->type==TUPLE_CSTRING &&
+       strcmp(cmd->value->cstring,"AUDIO_CHUNK")==0)
+      set_status(NULL);
     return;
   }
   Tuple *command_tuple = dict_find(iterator, MESSAGE_KEY_COMMAND); 
   if (!command_tuple) return;                   
 
   if (strncmp(command_tuple->value->cstring, "TEXT_RESPONSE", 13) == 0) {
+    bool no_audio=strcmp(command_tuple->value->cstring,"TEXT_RESPONSE_NO_AUDIO")==0;
     if(no_audio)ha_audio_stop();
     Tuple *text_tuple = dict_find(iterator, MESSAGE_KEY_TEXT); 
     if (text_tuple) {
