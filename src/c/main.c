@@ -774,6 +774,10 @@ static void inbox_received_callback(DictionaryIterator *iterator, void *context)
       // MULTIPLEXING INTERCEPT: Determine if the phone told us to expect audio chunks
       if (strcmp(command_tuple->value->cstring, "TEXT_RESPONSE_NO_AUDIO") == 0) {
         no_audio = true;
+        // A later progressive WAV chunk can fail after earlier audio played.
+        // Stop queued speaker frames immediately; never continue a partial
+        // or potentially corrupt ADPCM stream following an error.
+        stop_audio();
         s_ignore_audio = true;
       }
     #endif
