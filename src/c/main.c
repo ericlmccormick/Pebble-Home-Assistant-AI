@@ -24,7 +24,7 @@
   #define PLAYBACK_ADPCM_BYTES 800         
   #define PLAYBACK_PCM_SAMPLES (PLAYBACK_ADPCM_BYTES * 2) 
   #define PLAYBACK_INTERVAL_MS 200         
-  #define START_BUFFER_THRESHOLD 2100      
+  #define START_BUFFER_THRESHOLD 2800      
   #define STREAM_CLOSE_DELAY_MS 1500       
 #endif
 
