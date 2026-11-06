@@ -1149,6 +1149,14 @@ function pluginFetchWav(sentence,gen,testTone,options){
     var length=meta.length,step=meta.chunk_bytes||6000;
     if(step!==6000)throw Error('Unsupported TTS chunk size');
     var data=new Uint8Array(length);
+    var initialOffset=0;
+    if(typeof meta.first_chunk==='string' && meta.first_chunk.length){
+      var first=pluginDecodeBase64(meta.first_chunk);
+      if(first.length!==Math.min(step,length))
+        throw Error('Invalid bridge inlined first WAV chunk');
+      data.set(first,0);
+      initialOffset=first.length;
+    }
     // Pebble launches one plugin action per WAV chunk. The original loop
     // waited for each action to restart/finish before requesting the next,
     // delaying the entire first sentence. Read three independent offsets
@@ -1177,7 +1185,7 @@ function pluginFetchWav(sentence,gen,testTone,options){
         return receiveBatch(limit);
       });
     }
-    return receiveBatch(0);
+    return receiveBatch(initialOffset);
   }).then(function(audio){
     if(session)pluginAction('tts_release',{session_id:session}).catch(function(){});
     var receivedChecksum=pluginWavChecksum(new Uint8Array(audio));
