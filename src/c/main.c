@@ -272,15 +272,25 @@ static void update_text_layout() {
     }
   }
 
+  static void stop_audio(void);
   static void push_to_ring_buffer(uint8_t *data, uint16_t length) {
-    for (uint16_t i = 0; i < length; i++) {     
-      if (s_buffer_count < RING_BUFFER_SIZE) {  
-        s_ring_buffer[s_tail] = data[i];        
-        s_tail = (s_tail + 1) % RING_BUFFER_SIZE; 
-        s_buffer_count++;                       
-      }
+    // ADPCM has a stateful predictor. Dropping a single byte silently
+    // desynchronizes the entire remaining speech stream into noise.
+    if (length > RING_BUFFER_SIZE - s_buffer_count) {
+      APP_LOG(APP_LOG_LEVEL_ERROR,
+        "ADPCM ring overflow: queued=%lu incoming=%u capacity=%u",
+        (unsigned long)s_buffer_count, (unsigned)length, RING_BUFFER_SIZE);
+      stop_audio();
+      s_ignore_audio = true;
+      set_status("Audio overflow");
+      return;
     }
-    cancel_close_timer();                       
+    for (uint16_t i = 0; i < length; i++) {
+      s_ring_buffer[s_tail] = data[i];
+      s_tail = (s_tail + 1) % RING_BUFFER_SIZE;
+      s_buffer_count++;
+    }
+    cancel_close_timer();
   }
 
   static void start_playback() {
