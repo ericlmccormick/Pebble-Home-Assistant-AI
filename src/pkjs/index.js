@@ -276,6 +276,7 @@ function configListPipelines() {
 // Keep the diagnostic on the phone; opening settings displays the last speech
 // request without requiring a Pebble CLI, computer, or access to log files.
 var PCM_DEBUG_STORAGE_KEY='HA_PCM_DIAGNOSTICS_V1';
+var WATCH_AUDIO_STORAGE_KEY='HA_WATCH_AUDIO_STATS_V1';
 function formatPcmDiagnostics() {
   var data=localStorage.getItem(PCM_DEBUG_STORAGE_KEY);
   if(!data)return 'No TTS diagnostics captured yet. Ask Home Assistant a question and reopen Settings.';
@@ -334,6 +335,19 @@ function formatPcmDiagnostics() {
       lines.push('Total WAV retrieval: '+o.total_wav_ms+' ms');
     if(o.inlined_first_chunk!==undefined)
       lines.push('Initial chunk in preparation: '+(o.inlined_first_chunk?'yes':'no'));
+    var watchStats=null;
+    try{watchStats=JSON.parse(localStorage.getItem(WATCH_AUDIO_STORAGE_KEY)||'null');}
+    catch(ignored){}
+    if(watchStats){
+      lines.push('Watch playback (last completed speaker session):');
+      lines.push('Watch captured: '+watchStats.timestamp);
+      lines.push('PCM buffer-empty events: '+watchStats.empty);
+      lines.push('PCM buffer-empty time: '+watchStats.empty_ms+' ms (includes final drain)');
+      lines.push('Partial speaker writes: '+watchStats.partial);
+      lines.push('Zero-byte speaker writes: '+watchStats.zero);
+      lines.push('Peak ADPCM ring: '+watchStats.peak+' B');
+      lines.push('Speaker write callbacks with data: '+watchStats.frames);
+    }
     if(o.error)lines.push('Error: '+o.error);
     // Clay text elements allow HTML; escape all received values.
     return '<div style="white-space:pre-wrap;word-break:break-word;font-size:13px">'+
@@ -885,6 +899,21 @@ function conversationMaybeCompleteAudio() {
 
 Pebble.addEventListener('appmessage',function(e) {
   var d=e.payload;
+  if(d.COMMAND==='AUDIO_STATS'){
+    // Sent only after the watch closes the speaker stream. Keep this
+    // separate from the newest Bridge request timing, which may describe
+    // a different sentence in the same multi-sentence response.
+    var stats={timestamp:new Date().toISOString()};
+    String(d.TEXT||'').split(',').forEach(function(pair){
+      var bits=pair.split('=');
+      if(bits.length!==2)return;
+      if(!/^(empty|empty_ms|partial|zero|peak|frames)$/.test(bits[0]))return;
+      var value=Number(bits[1]);
+      if(Number.isInteger(value)&&value>=0)stats[bits[0]]=value;
+    });
+    localStorage.setItem(WATCH_AUDIO_STORAGE_KEY,JSON.stringify(stats));
+    return;
+  }
   if(d.COMMAND==='MIC_MODE_ON'){
     if(useHaPlugin){
       nativeCancel();
