@@ -85,9 +85,15 @@ static char s_ha_text[MAX_TEXT_LENGTH];
   static AppTimer *s_stream_close_timer = NULL; 
   static bool s_speaker_open = false;
   // Preserve PCM bytes rejected by a full speaker queue; never drop a partial write.
-  static int16_t s_pending_pcm[PLAYBACK_PCM_SAMPLES];
-  static uint32_t s_pending_offset = 0;
-  static uint32_t s_pending_length = 0;           
+  // Ping-pong PCM frames: while one frame drains into the speaker stream,
+  // the next is already decoded from the ADPCM ring. The predictor remains
+  // continuous across both buffers and between consecutive sentences.
+  static int16_t s_pcm_frames[2][PLAYBACK_PCM_SAMPLES];
+  static uint32_t s_pcm_lengths[2] = {0,0};
+  static uint8_t s_pcm_read = 0;
+  static uint8_t s_pcm_write = 0;
+  static uint8_t s_pcm_queued = 0;
+  static uint32_t s_pending_offset = 0;           
   static bool s_ignore_audio = false;           
 
   static const int16_t stepTable[89] = {
@@ -262,7 +268,7 @@ static void update_text_layout() {
 
   static void delayed_close_callback(void *data) {
     s_stream_close_timer = NULL;                
-    if (s_buffer_count == 0 && s_speaker_open) { 
+    if (s_buffer_count == 0 && s_pcm_queued == 0 && s_speaker_open) { 
       speaker_stream_close();                   
       s_speaker_open = false;
       if(s_conversation_audio_complete){
@@ -311,53 +317,58 @@ static void update_text_layout() {
     }
   }
 
-  static void playback_timer_callback(void *data) {
-    s_playback_timer = NULL;
-    if (!s_speaker_open) return;
-
-    // Flush exactly the remaining bytes if an earlier write was partial.
-    // speaker_stream_write() is allowed to accept fewer bytes than requested.
-    if (s_pending_offset < s_pending_length) {
-      uint32_t remaining = s_pending_length - s_pending_offset;
-      uint32_t accepted = speaker_stream_write(
-          ((uint8_t*)s_pending_pcm) + s_pending_offset, remaining);
-      if (accepted > remaining) accepted = remaining;
-      s_pending_offset += accepted;
-      if (s_pending_offset < s_pending_length) {
-        s_playback_timer = app_timer_register(15, playback_timer_callback, NULL);
-        return;
+  // Decode ahead into the free PCM frame without writing to the speaker.
+  // Each 800 ADPCM bytes produces 200 ms of 8 kHz/16-bit PCM. A second
+  // buffer absorbs BLE callback jitter while the first frame is playing.
+  static void fill_pcm_frames(void) {
+    while (s_pcm_queued < 2 && s_buffer_count > 0) {
+      uint8_t slot = s_pcm_write;
+      uint16_t count = s_buffer_count < PLAYBACK_ADPCM_BYTES ?
+                         s_buffer_count : PLAYBACK_ADPCM_BYTES;
+      for(uint16_t i=0;i<count;i++){
+        uint8_t value=s_ring_buffer[s_head];
+        s_head=(s_head+1)%RING_BUFFER_SIZE;
+        s_buffer_count--;
+        s_pcm_frames[slot][i*2]=decode_adpcm_to_16bit((value>>4)&15);
+        s_pcm_frames[slot][i*2+1]=decode_adpcm_to_16bit(value&15);
       }
+      s_pcm_lengths[slot]=(uint32_t)count*4;
+      s_pcm_write^=1;
+      s_pcm_queued++;
     }
-    s_pending_offset = 0;
-    s_pending_length = 0;
+  }
 
-    if (s_buffer_count == 0) {
+  static void playback_timer_callback(void *data) {
+    s_playback_timer=NULL;
+    if(!s_speaker_open)return;
+    // Preserve any partially accepted PCM. Decode into the alternate frame
+    // and never overwrite a frame until the speaker accepts all its bytes.
+    fill_pcm_frames();
+    if(s_pcm_queued==0){
       schedule_close_timer();
-      s_playback_timer = app_timer_register(20, playback_timer_callback, NULL);
+      s_playback_timer=app_timer_register(20,playback_timer_callback,NULL);
       return;
     }
-
-    const uint16_t bytes_to_decode = s_buffer_count < PLAYBACK_ADPCM_BYTES ?
-                                      s_buffer_count : PLAYBACK_ADPCM_BYTES;
-    memset(s_pending_pcm, 0, sizeof(s_pending_pcm));
-    for (uint16_t i = 0; i < bytes_to_decode; i++) {
-      uint8_t adpcm_byte = s_ring_buffer[s_head];
-      s_head = (s_head + 1) % RING_BUFFER_SIZE;
-      s_buffer_count--;
-
-      s_pending_pcm[i * 2] = decode_adpcm_to_16bit((adpcm_byte >> 4) & 0x0F);
-      s_pending_pcm[i * 2 + 1] = decode_adpcm_to_16bit(adpcm_byte & 0x0F);
+    cancel_close_timer();
+    uint8_t slot=s_pcm_read;
+    uint32_t remaining=s_pcm_lengths[slot]-s_pending_offset;
+    uint32_t accepted=speaker_stream_write(
+      ((uint8_t*)s_pcm_frames[slot])+s_pending_offset,remaining);
+    if(accepted>remaining)accepted=remaining;
+    s_pending_offset+=accepted;
+    if(s_pending_offset<s_pcm_lengths[slot]){
+      s_playback_timer=app_timer_register(15,playback_timer_callback,NULL);
+      return;
     }
-    // Only send valid decoded samples. A last partial frame must not be
-    // expanded into silence that changes the ADPCM stream's timing.
-    s_pending_length = bytes_to_decode * 4;
-    uint32_t accepted = speaker_stream_write((uint8_t*)s_pending_pcm, s_pending_length);
-    if (accepted > s_pending_length) accepted = s_pending_length;
-    s_pending_offset = accepted;
-    s_playback_timer = app_timer_register(
-        s_pending_offset < s_pending_length ? 15 :
-        (PLAYBACK_INTERVAL_MS),
-        playback_timer_callback, NULL);
+    s_pcm_lengths[slot]=0;
+    s_pending_offset=0;
+    s_pcm_read^=1;
+    s_pcm_queued--;
+    fill_pcm_frames();
+    // Pace full 200 ms frames to real-time playback; the short retry timer
+    // above is exclusively for a partial speaker write.
+    s_playback_timer=app_timer_register(PLAYBACK_INTERVAL_MS,
+                                        playback_timer_callback,NULL);
   }
 
   static void stop_audio() {
@@ -375,7 +386,11 @@ static void update_text_layout() {
     s_tail = 0;                                 
     reset_adpcm_state();                        
     s_pending_offset = 0;
-    s_pending_length = 0;
+    s_pcm_read = 0;
+    s_pcm_write = 0;
+    s_pcm_queued = 0;
+    s_pcm_lengths[0] = 0;
+    s_pcm_lengths[1] = 0;
     set_status(NULL);                           
   }
 
