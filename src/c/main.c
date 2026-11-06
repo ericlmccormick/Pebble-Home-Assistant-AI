@@ -4,19 +4,9 @@
 
 #include <pebble.h>
 #include "ha_audio.h"
-// Plugin-only input uses PebbleOS dictation. Native raw-mic streaming is
-// intentionally disabled until the Bridge exposes a plugin audio-stream API.
-#define HA_ENABLE_NATIVE_MIC_STREAM 0
-
+// The plugin API does not expose a raw, continuous microphone stream.
+// All voice input uses PebbleOS system dictation and Bridge conversation.
 #define MAX_TEXT_LENGTH 2048
-// Compile only with an SDK that exports mic_stream_to_phone_start().
-#if HA_ENABLE_NATIVE_MIC_STREAM && defined(PBL_PLATFORM_EMERY) && defined(PBL_MICROPHONE) && !defined(PBL_SDK_FROZEN)
-#define HA_MIC_AVAILABLE 1
-#else
-#define HA_MIC_AVAILABLE 0
-#endif
- 
-
 #ifdef PBL_SPEAKER
   #define RING_BUFFER_SIZE 16384           
   #define PERSIST_KEY_VOLUME 100           
@@ -82,11 +72,6 @@ static void set_ui_state(UIState state);
 static void window_click_config_provider(void *context);
 static void conversation_disable(void);
 static void conversation_schedule_resume(void);
-#if HA_MIC_AVAILABLE
-static void native_mic_start(void);
-static void native_mic_disable(void);
-#endif 
-#ifdef PBL_SPEAKER
   static void up_volume_handler(ClickRecognizerRef recognizer, void *context);   
   static void down_volume_handler(ClickRecognizerRef recognizer, void *context); 
 #endif
@@ -185,116 +170,6 @@ static void down_volume_handler(ClickRecognizerRef recognizer,void *context){
   ha_haptic();show_volume_indicator();
 }
 #endif
-#if HA_MIC_AVAILABLE
-// SDK 110+ handles Speex compression and Bluetooth microphone transfer.
-// The phone delivers decoded PCM16 via audiostream events.
-static bool s_native_streaming = false;
-static bool s_native_waiting = false;
-static bool s_native_phone_accepted = false;
-static const char *native_stop_reason_name(MicStreamStopReason reason) {
-  switch (reason) {
-    case MicStreamStopReasonStopped: return "Stopped";
-    case MicStreamStopReasonFocusLost: return "FocusLost";
-    case MicStreamStopReasonInterrupted: return "Interrupted";
-    case MicStreamStopReasonPhone: return "Phone";
-    case MicStreamStopReasonError: return "Error";
-    default: return "Unknown";
-  }
-}
-static void native_send_command(const char *command) {
-  DictionaryIterator *iter = NULL;
-  if (app_message_outbox_begin(&iter) != APP_MSG_OK || !iter) return;
-  dict_write_cstring(iter, MESSAGE_KEY_COMMAND, command);
-  app_message_outbox_send();
-}
-static void native_mic_stop(void) {
-  if (s_native_streaming || mic_stream_to_phone_is_active()) {
-    s_native_streaming = false;
-    mic_stream_to_phone_stop();
-  }
-}
-static void native_mic_started(void *context) {
-  s_native_phone_accepted = true;
-  APP_LOG(APP_LOG_LEVEL_INFO, "Native mic: phone accepted audio stream");
-  if (s_conversation_mode && !s_native_waiting) set_status("Listening...");
-}
-static void native_mic_stopped(MicStreamStopReason reason, void *context) {
-  APP_LOG(APP_LOG_LEVEL_ERROR, "Native mic stopped: reason=%s (%d), accepted=%d, waiting=%d",
-          native_stop_reason_name(reason), (int)reason,
-          (int)s_native_phone_accepted, (int)s_native_waiting);
-  s_native_streaming = false;
-  // Expected stop at the end of an utterance; don't cancel conversation.
-  if (s_native_waiting || !s_conversation_mode) return;
-  s_native_waiting = true;
-  s_conversation_mode = false;
-  native_send_command("MIC_MODE_OFF");
-  set_ui_state(UI_STATE_IDLE);
-  if (reason == MicStreamStopReasonPhone) {
-    set_status(s_native_phone_accepted ? "Phone ended mic stream" :
-                 "Phone refused mic; check permission");
-  } else if (reason == MicStreamStopReasonFocusLost) {
-    set_status("Mic stopped: app lost focus");
-  } else if (reason == MicStreamStopReasonInterrupted) {
-    set_status("Mic busy: system interruption");
-  } else if (reason == MicStreamStopReasonError) {
-    set_status("Mic stream system error");
-  } else {
-    set_status("Mic stopped unexpectedly");
-  }
-  ha_haptic();
-}
-static void native_mic_start(void) {
-  if (!s_conversation_mode || s_native_streaming) return;
-  s_native_waiting = false;
-  s_native_phone_accepted = false;
-  s_thinking_transcript[0] = 0;
-  if (s_thinking_transcript_layer)
-    text_layer_set_text(s_thinking_transcript_layer, s_thinking_transcript);
-  set_ui_state(UI_STATE_IDLE);
-  MicStreamStartResult result = mic_stream_to_phone_start((MicStreamHandlers){
-    .started = native_mic_started, .stopped = native_mic_stopped
-  }, NULL);
-  s_native_streaming = result == MicStreamStartOk;
-  APP_LOG(APP_LOG_LEVEL_INFO, "Native mic start returned %d", (int)result);
-  if (!s_native_streaming) {
-    s_conversation_mode = false; s_native_waiting = true;
-    native_send_command("MIC_MODE_OFF");
-    set_ui_state(UI_STATE_IDLE);
-    set_status(result == MicStreamStartErrBusy ? "Microphone busy" :
-               result == MicStreamStartErrUnavailable ? "Microphone unavailable" :
-               result == MicStreamStartErrNotForeground ? "App not foreground" :
-               "Mic denied or unavailable");
-    ha_haptic();
-  } else set_status("Listening...");
-}
-static void native_mic_disable(void) {
-  if (!s_conversation_mode) return;
-  s_conversation_mode = false; s_native_waiting = true;
-  native_mic_stop();
-  native_send_command("MIC_MODE_OFF");
-#ifdef PBL_SPEAKER
-  s_conversation_audio_complete = false;
-#endif
-}
-static void native_mic_toggle(void) {
-  if (s_conversation_mode) {
-    native_mic_disable();
-    set_ui_state(UI_STATE_IDLE);
-    set_status(NULL);
-    ha_haptic();
-    return;
-  }
-#ifdef PBL_SPEAKER
-  s_ignore_audio = true;
-  ha_audio_stop();
-#endif
-  s_conversation_mode = true; s_native_waiting = false;
-  native_send_command("MIC_MODE_ON");
-  native_mic_start();
-  ha_haptic();
-}
-#endif
-
 // Legacy SDK fallback: dictation produces recognized text, not raw PCM.
 // Reopen Pebble's dictation UI after each Home Assistant answer finishes.
 // Back on the Pebble dictation overlay is delivered as a rejected transcription;
@@ -325,10 +200,6 @@ static void conversation_resume_callback(void *context) {
 }
 static void conversation_schedule_resume(void) {
   if (!s_conversation_mode) return;
-#if HA_MIC_AVAILABLE
-  if (!s_dictation_fallback) { native_mic_start(); return; }
-#endif
-  if (s_conversation_resume_timer) app_timer_cancel(s_conversation_resume_timer);
   s_conversation_resume_timer = app_timer_register(450, conversation_resume_callback, NULL);
 }
 static void conversation_disable(void) {
@@ -343,10 +214,6 @@ static void conversation_disable(void) {
     dictation_session_stop(s_dictation_session);
   }
   s_conversation_dictating = false;
-#if HA_MIC_AVAILABLE
-  if (s_conversation_mode && !s_dictation_fallback) native_mic_disable();
-#endif
-  s_conversation_mode = false;
   s_dictation_fallback = false;
   // Do not leave a stale "listening" claim visible after a cancelled turn.
   set_status(NULL);
@@ -364,20 +231,6 @@ static void conversation_toggle(void){
 
 static void select_short_click_handler(ClickRecognizerRef recognizer, void *context) {
   if(ha_audio_is_playing())ha_audio_stop();
-#if HA_MIC_AVAILABLE
-  // While in hands-free conversation, a short Select ends only this spoken
-  // request. Do not leave conversation mode or open the system dictation UI.
-  if (s_conversation_mode && !s_dictation_fallback) {
-    if (!s_native_waiting && s_native_streaming) {
-      s_native_waiting = true;
-      native_mic_stop();
-      set_ui_state(UI_STATE_THINKING);
-      set_status("Processing speech...");
-    }
-    return;
-  }
-#endif
-  if(s_conversation_mode) conversation_disable();
   set_status(NULL);
   if (!s_dictation_session) {
     set_status("Microphone unavailable");
@@ -405,10 +258,6 @@ static void exit_back_click_handler(ClickRecognizerRef recognizer, void *context
     return;
   }
   if (s_current_state == UI_STATE_THINKING) {
-#if HA_MIC_AVAILABLE
-    native_send_command("MIC_MODE_OFF");
-#endif
-    set_ui_state(UI_STATE_IDLE);
     return;
   }
   window_stack_pop(true);
@@ -514,10 +363,6 @@ static void inbox_received_callback(DictionaryIterator *iterator, void *context)
   if (!command_tuple) return;                   
 
   if (strncmp(command_tuple->value->cstring, "TEXT_RESPONSE", 13) == 0) {
-    #if HA_MIC_AVAILABLE
-      if(s_conversation_mode) {s_native_waiting=true;native_mic_stop();}
-    #endif 
-    bool no_audio=strcmp(command_tuple->value->cstring,"TEXT_RESPONSE_NO_AUDIO")==0;
     if(no_audio)ha_audio_stop();
     Tuple *text_tuple = dict_find(iterator, MESSAGE_KEY_TEXT); 
     if (text_tuple) {
@@ -580,22 +425,7 @@ static void inbox_received_callback(DictionaryIterator *iterator, void *context)
       set_status("Conversation stopped");
     }
     else if (strcmp(command_tuple->value->cstring, "MIC_MODE_OFF") == 0) {
-#if HA_MIC_AVAILABLE
-      native_mic_disable();
-      set_ui_state(UI_STATE_IDLE);
-      set_status("Microphone stream ended");
-#endif
-    }
     else if (strcmp(command_tuple->value->cstring, "MIC_TURN_END") == 0) {
-#if HA_MIC_AVAILABLE
-      if (s_conversation_mode) {
-        s_native_waiting = true;
-        native_mic_stop();
-        set_ui_state(UI_STATE_THINKING);
-        set_status("Processing speech...");
-      }
-#endif
-    }
     else if (strcmp(command_tuple->value->cstring, "CONV_TRANSCRIPT") == 0) {
       Tuple *utterance = dict_find(iterator, MESSAGE_KEY_TEXT);
       if (utterance && s_thinking_transcript_layer) {
@@ -845,10 +675,6 @@ static void init() {
   #endif
   
   app_message_register_inbox_received(inbox_received_callback);
-#if HA_MIC_AVAILABLE
-  // Microphone audio is handled natively by PebbleOS; no AppMessage PCM.
-#endif 
-  app_message_open(12000, 1024);                
   
   s_main_window = window_create();              
   window_set_window_handlers(s_main_window, (WindowHandlers) {
