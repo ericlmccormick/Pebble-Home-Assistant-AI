@@ -84,7 +84,6 @@ static char s_ha_text[MAX_TEXT_LENGTH];
   static AppTimer *s_playback_timer = NULL;     
   static AppTimer *s_stream_close_timer = NULL; 
   static bool s_speaker_open = false;
-  static bool s_audio_16k = false;
   // Preserve PCM bytes rejected by a full speaker queue; never drop a partial write.
   static int16_t s_pending_pcm[PLAYBACK_PCM_SAMPLES];
   static uint32_t s_pending_offset = 0;
@@ -289,7 +288,7 @@ static void update_text_layout() {
     set_status(NULL);                           
 
     if (!s_speaker_open) {                      
-      bool success = speaker_stream_open(s_audio_16k ? SpeakerPcmFormat_16kHz_16bit : SpeakerPcmFormat_8kHz_16bit, 100);
+      bool success = speaker_stream_open(SpeakerPcmFormat_8kHz_16bit, 100);
       if (!success) {
         APP_LOG(APP_LOG_LEVEL_ERROR, "Speaker failed to open"); 
         return;
@@ -298,7 +297,7 @@ static void update_text_layout() {
     }
 
     if (!s_playback_timer) {                     
-      s_playback_timer = app_timer_register(s_audio_16k ? 100 : PLAYBACK_INTERVAL_MS, playback_timer_callback, NULL); 
+      s_playback_timer = app_timer_register(PLAYBACK_INTERVAL_MS, playback_timer_callback, NULL); 
     }
   }
 
@@ -347,7 +346,7 @@ static void update_text_layout() {
     s_pending_offset = accepted;
     s_playback_timer = app_timer_register(
         s_pending_offset < s_pending_length ? 15 :
-        (s_audio_16k ? 100 : PLAYBACK_INTERVAL_MS),
+        (PLAYBACK_INTERVAL_MS),
         playback_timer_callback, NULL);
   }
 
@@ -734,8 +733,6 @@ static void inbox_received_callback(DictionaryIterator *iterator, void *context)
     #endif 
     #ifdef PBL_SPEAKER
     bool no_audio = false;
-      // Reset the stream format when a new text response starts.
-      s_audio_16k = strcmp(command_tuple->value->cstring, "TEXT_RESPONSE_16_16") == 0;
       // MULTIPLEXING INTERCEPT: Determine if the phone told us to expect audio chunks
       if (strcmp(command_tuple->value->cstring, "TEXT_RESPONSE_NO_AUDIO") == 0) {
         no_audio = true;
