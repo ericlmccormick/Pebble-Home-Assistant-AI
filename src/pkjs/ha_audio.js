@@ -51,7 +51,7 @@ function prefetchNextBridgeSentence(gen){
   var entry={sentence:sentence,gen:gen,promise:null};
   // Resolve failures as values to avoid unhandled rejections while the active
   // sentence is still streaming. Surface them when this sentence is consumed.
-  entry.promise=pluginAction('tts_prepare',{text:sentence}).then(
+  entry.promise=pluginPrepareWithRetry(sentence).then(
     function(result){return {result:result};},
     function(error){return {error:error};}
   );
@@ -141,6 +141,28 @@ function pluginWavChecksum(bytes){
 }
 function pluginAction(name,args){
   return Pebble.invokeAction({plugin:HA_PLUGIN_UUID,action:name,args:args});
+}
+// A transient HTTP 5xx while preparing a later sentence must not discard
+// a long answer immediately. Bridge itself retries/re-generates TTS proxy
+// URLs; this single SDK retry also tolerates an older Bridge build.
+function pluginPrepareWithRetry(sentence,attempt){
+  attempt=attempt||0;
+  return pluginAction('tts_prepare',{text:sentence}).then(function(reply){
+    if(reply && reply.ok)return reply;
+    var message=String(reply&&reply.message||'plugin call failed');
+    if(attempt<1 && /(?:HTTP (?:429|500|502|503|504)\b|connection failed|temporarily unavailable)/i.test(message))
+      return new Promise(function(resolve){setTimeout(resolve,350);}).then(function(){
+        return pluginPrepareWithRetry(sentence,attempt+1);
+      });
+    return reply;
+  },function(error){
+    var message=String(error&&error.message||error);
+    if(attempt<1 && /(?:HTTP (?:429|500|502|503|504)\b|temporarily unavailable)/i.test(message))
+      return new Promise(function(resolve){setTimeout(resolve,350);}).then(function(){
+        return pluginPrepareWithRetry(sentence,attempt+1);
+      });
+    throw error;
+  });
 }
 function pluginResult(result,context){
   if(!result||!result.ok)throw Error(context+': '+String(result&&result.message||'plugin call failed'));
@@ -271,7 +293,7 @@ function pluginStreamWav(sentence,gen,onPcm,prepared){
       drain();
     });
   }
-  return (prepared||pluginAction('tts_prepare',{text:sentence})).then(function(result){
+  return (prepared||pluginPrepareWithRetry(sentence)).then(function(result){
     var meta=pluginResult(result,'TTS preparation');
     preparedAt=Date.now();
     if(meta.format!=='pcm_s16le_wav'||meta.sample_rate!==8000||
