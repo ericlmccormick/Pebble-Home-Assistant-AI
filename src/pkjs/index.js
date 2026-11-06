@@ -327,7 +327,7 @@ function runBridgeAudioTest(){
   isFetchingTTS=true;isSendingBLE=false;
   js_adpcm_valpred=0;js_adpcm_index=0;
   conversationAudioFinalPending=false;
-  lastAnswer='Audio diagnostic: bridge-supplied 440 Hz reference tone (2 seconds).';
+  lastAnswer='Audio diagnostic: bridge-supplied 440 Hz reference tone (7 seconds).';
   Pebble.sendAppMessage({COMMAND:'TEXT_RESPONSE_8_16',TEXT:lastAnswer},function(){
     if(gen!==requestGeneration)return;
     pluginFetchWav('',gen,true).then(function(pcm){
