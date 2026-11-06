@@ -283,6 +283,14 @@ function formatPcmDiagnostics() {
         ' B; available '+o.available_data_bytes+
         ' B; used '+o.used_data_bytes+' B');
     if(o.wav_length)lines.push('WAV total length: '+o.wav_length+' B');
+    if(o.prepare_ms!==undefined)
+      lines.push('TTS prepare: '+o.prepare_ms+' ms');
+    if(o.chunk_transfer_ms!==undefined)
+      lines.push('WAV chunks: '+o.chunk_transfer_ms+' ms');
+    if(o.total_wav_ms!==undefined)
+      lines.push('Total WAV retrieval: '+o.total_wav_ms+' ms');
+    if(o.inlined_first_chunk!==undefined)
+      lines.push('Initial chunk in preparation: '+(o.inlined_first_chunk?'yes':'no'));
     if(o.error)lines.push('Error: '+o.error);
     // Clay text elements allow HTML; escape all received values.
     return '<div style="white-space:pre-wrap;word-break:break-word;font-size:13px">'+
@@ -1121,6 +1129,7 @@ function pluginResult(result,context){
 // 4-bit IMA ADPCM, then sends 700-byte packets to the watch.
 function pluginFetchWav(sentence,gen,testTone,options){
   var session=null,expectedChecksum=null;
+  var startedAt=Date.now(),preparedAt=0;
   var args=testTone?{test_tone:true}:{text:sentence};
   if(options){
     if(options.source_rate)args.source_rate=options.source_rate;
@@ -1128,6 +1137,7 @@ function pluginFetchWav(sentence,gen,testTone,options){
   }
   return pluginAction('tts_prepare',args).then(function(result){
     var meta=pluginResult(result,'TTS preparation');
+    preparedAt=Date.now();
     if(meta.format!=='pcm_s16le_wav'||meta.sample_rate!==8000||
        meta.channels!==1||meta.bits_per_sample!==16)
       throw Error('Bridge PCM WAV format mismatch: update Home Assistant Bridge');
@@ -1143,6 +1153,8 @@ function pluginFetchWav(sentence,gen,testTone,options){
       debug.timestamp=new Date().toISOString();
       debug.transfer='retrieving WAV chunks';
       debug.wav_length=meta.length;
+      debug.prepare_ms=preparedAt-startedAt;
+      debug.inlined_first_chunk=!!meta.first_chunk;
       localStorage.setItem(PCM_DEBUG_STORAGE_KEY,JSON.stringify(debug));
     }
     session=String(meta.session_id);
@@ -1197,6 +1209,8 @@ function pluginFetchWav(sentence,gen,testTone,options){
       throw Error('TTS chunk checksum mismatch (data corrupted during plugin transfer)');
     }
     saved.transfer='WAV checksum verified; PCM decoded';
+    saved.chunk_transfer_ms=Date.now()-preparedAt;
+    saved.total_wav_ms=Date.now()-startedAt;
     localStorage.setItem(PCM_DEBUG_STORAGE_KEY,JSON.stringify(saved));
     return wavToPcm(audio);
   },function(error){
@@ -1267,7 +1281,7 @@ function startTTSFetchLoop(gen) {
 // below the physical 16 KiB ring. Never wait a fixed 175 ms after each ACK:
 // that added BLE callback time on top of the audio transmission budget.
 var bleFlowGeneration=-1,bleFlowSent=0,bleFlowStartedAt=0;
-var BLE_PLAYBACK_BPS=4000,BLE_PREBUFFER_BYTES=3000,BLE_SAFE_QUEUE_BYTES=7500;
+var BLE_PLAYBACK_BPS=4000,BLE_PREBUFFER_BYTES=2100,BLE_SAFE_QUEUE_BYTES=7500;
 function bleAudioQueueEstimate(now){
   if(!bleFlowStartedAt)return bleFlowSent;
   return Math.max(0,bleFlowSent-
