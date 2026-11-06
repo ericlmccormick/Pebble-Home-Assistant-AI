@@ -813,7 +813,10 @@ static void inbox_received_callback(DictionaryIterator *iterator, void *context)
     }
   } else if (strcmp(command_tuple->value->cstring, "AUDIO_SENTENCE_END") == 0) {
     if (s_ignore_audio) return;
-    s_sentence_end_pending=true;
+    // There is no partial tail if the ring has already been decoded into
+    // the two PCM frames. In that case, do not carry end-of-sentence state
+    // into the next packet from the following sentence.
+    s_sentence_end_pending=(s_buffer_count>0);
     if (!s_speaker_open && s_buffer_count > 0) start_playback();
   } 
   #endif
