@@ -731,7 +731,7 @@ function askHomeAssistantViaPlugin(prompt,skipAudio,legacyTurn) {
     }
     var answer=String(data.text||'No response from Home Assistant.');
     lastAnswer=answer;
-    Pebble.sendAppMessage({COMMAND:skipAudio?'TEXT_RESPONSE_NO_AUDIO':'TEXT_RESPONSE_16_16',
+    Pebble.sendAppMessage({COMMAND:skipAudio?'TEXT_RESPONSE_NO_AUDIO':'TEXT_RESPONSE_8_16',
       TEXT:answer.substring(0,1900)},function(){
       if(generation!==requestGeneration)return;
       if(skipAudio){if(legacyTurn)Pebble.sendAppMessage({COMMAND:'CONV_RESUME'});return;}
@@ -956,14 +956,14 @@ function pluginResult(result,context){
   try{return JSON.parse(result.text||'{}');}
   catch(e){throw Error(context+': invalid plugin response');}
 }
-// Plugin returns 16kHz IMA ADPCM ready for the watch; do not encode twice.
+// Plugin returns antialiased 8kHz IMA ADPCM ready for Gemini-compatible watch playback; do not encode twice.
 var pluginImaPredictor=0,pluginImaIndex=0;
 function pluginFetchAdpcm(sentence,gen){
   var session=null,nextPredictor=0,nextIndex=0;
   return pluginAction('tts_prepare',{text:sentence,
     predictor:pluginImaPredictor,index:pluginImaIndex}).then(function(result){
     var meta=pluginResult(result,'TTS preparation');
-    if(meta.format!=='ima_adpcm4'||meta.sample_rate!==16000||
+    if(meta.format!=='ima_adpcm4'||meta.sample_rate!==8000||
        meta.channels!==1||!Number.isInteger(meta.length)||meta.length<1||
        meta.length>1500000||!Number.isInteger(meta.next_predictor)||
        !Number.isInteger(meta.next_index))
