@@ -84,7 +84,11 @@ static char s_ha_text[MAX_TEXT_LENGTH];
   static AppTimer *s_playback_timer = NULL;     
   static AppTimer *s_stream_close_timer = NULL; 
   static bool s_speaker_open = false;
-  static bool s_audio_16k = false;           
+  static bool s_audio_16k = false;
+  // Preserve PCM bytes rejected by a full speaker queue; never drop a partial write.
+  static int16_t s_pending_pcm[PLAYBACK_PCM_SAMPLES];
+  static uint32_t s_pending_offset = 0;
+  static uint32_t s_pending_length = 0;           
   static bool s_ignore_audio = false;           
 
   static const int16_t stepTable[89] = {
@@ -299,31 +303,52 @@ static void update_text_layout() {
   }
 
   static void playback_timer_callback(void *data) {
-    s_playback_timer = NULL;                    
-    if (!s_speaker_open) return;                
+    s_playback_timer = NULL;
+    if (!s_speaker_open) return;
 
-    static int16_t s_out_buf[PLAYBACK_PCM_SAMPLES]; 
+    // Flush exactly the remaining bytes if an earlier write was partial.
+    // speaker_stream_write() is allowed to accept fewer bytes than requested.
+    if (s_pending_offset < s_pending_length) {
+      uint32_t remaining = s_pending_length - s_pending_offset;
+      uint32_t accepted = speaker_stream_write(
+          ((uint8_t*)s_pending_pcm) + s_pending_offset, remaining);
+      if (accepted > remaining) accepted = remaining;
+      s_pending_offset += accepted;
+      if (s_pending_offset < s_pending_length) {
+        s_playback_timer = app_timer_register(15, playback_timer_callback, NULL);
+        return;
+      }
+    }
+    s_pending_offset = 0;
+    s_pending_length = 0;
 
-    // Audio often ends with fewer than 800 ADPCM bytes. Decode the
-    // remaining bytes and pad the rest of this 200ms speaker frame with
-    // silence. Otherwise s_buffer_count never reaches zero and continuous
-    // conversation never resumes after Home Assistant finishes talking.
+    if (s_buffer_count == 0) {
+      schedule_close_timer();
+      s_playback_timer = app_timer_register(20, playback_timer_callback, NULL);
+      return;
+    }
+
     const uint16_t bytes_to_decode = s_buffer_count < PLAYBACK_ADPCM_BYTES ?
                                       s_buffer_count : PLAYBACK_ADPCM_BYTES;
-    memset(s_out_buf, 0, sizeof(s_out_buf));
+    memset(s_pending_pcm, 0, sizeof(s_pending_pcm));
     for (uint16_t i = 0; i < bytes_to_decode; i++) {
       uint8_t adpcm_byte = s_ring_buffer[s_head];
       s_head = (s_head + 1) % RING_BUFFER_SIZE;
       s_buffer_count--;
 
-      uint8_t nibble1 = (adpcm_byte >> 4) & 0x0F;
-      uint8_t nibble2 = adpcm_byte & 0x0F;
-      s_out_buf[i * 2] = decode_adpcm_to_16bit(nibble1);
-      s_out_buf[(i * 2) + 1] = decode_adpcm_to_16bit(nibble2);
+      s_pending_pcm[i * 2] = decode_adpcm_to_16bit((adpcm_byte >> 4) & 0x0F);
+      s_pending_pcm[i * 2 + 1] = decode_adpcm_to_16bit(adpcm_byte & 0x0F);
     }
-    speaker_stream_write((uint8_t*)s_out_buf, sizeof(s_out_buf));
-    if (s_buffer_count == 0) schedule_close_timer();
-    s_playback_timer = app_timer_register(s_audio_16k ? 100 : PLAYBACK_INTERVAL_MS, playback_timer_callback, NULL);
+    // Only send valid decoded samples. A last partial frame must not be
+    // expanded into silence that changes the ADPCM stream's timing.
+    s_pending_length = bytes_to_decode * 4;
+    uint32_t accepted = speaker_stream_write((uint8_t*)s_pending_pcm, s_pending_length);
+    if (accepted > s_pending_length) accepted = s_pending_length;
+    s_pending_offset = accepted;
+    s_playback_timer = app_timer_register(
+        s_pending_offset < s_pending_length ? 15 :
+        (s_audio_16k ? 100 : PLAYBACK_INTERVAL_MS),
+        playback_timer_callback, NULL);
   }
 
   static void stop_audio() {
@@ -340,6 +365,8 @@ static void update_text_layout() {
     s_head = 0;                                 
     s_tail = 0;                                 
     reset_adpcm_state();                        
+    s_pending_offset = 0;
+    s_pending_length = 0;
     set_status(NULL);                           
   }
 
