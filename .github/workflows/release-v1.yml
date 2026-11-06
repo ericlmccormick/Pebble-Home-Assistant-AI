@@ -1,0 +1,77 @@
+name: Publish Home Assistant AI v1.0.0
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'package.json'
+      - 'src/**'
+      - 'tests/**'
+      - 'wscript'
+      - '.github/workflows/release-v1.yml'
+permissions:
+  contents: write
+concurrency:
+  group: home-assistant-ai-v1-release
+  cancel-in-progress: false
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: false
+      - name: Validate v1 manifest and shared audio SDK
+        run: |
+          node -e "const p=require('./package.json');if(p.version!=='1.0.0'||p.pebble.projectType!=='native')process.exit(1)"
+          node --check src/pkjs/index.js
+          node --check src/pkjs/ha_audio.js
+          node tests/audio-flow.test.cjs
+          node tests/progressive-audio.test.cjs
+          node tests/sentence-prefetch.test.cjs
+      - name: Install Pebble SDK dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libsdl2-2.0-0 libglib2.0-0 libpixman-1-0 zlib1g libsndio7.0
+          uv tool install pebble-tool
+          pebble sdk install 4.44
+          pebble sdk activate 4.44
+      - name: Compile release PBW
+        run: pebble build
+      - name: Prepare release asset
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          files=(build/*.pbw)
+          if [[ ${#files[@]} -ne 1 ]]; then
+            echo "Expected one PBW; got ${#files[@]}" >&2
+            exit 1
+          fi
+          cp "${files[0]}" home-assistant-ai-v1.0.0.pbw
+      - uses: actions/upload-artifact@v4
+        with:
+          name: home-assistant-ai-v1.0.0
+          path: home-assistant-ai-v1.0.0.pbw
+          if-no-files-found: error
+      - name: Publish stable versioned GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! gh release view v1.0.0 >/dev/null 2>&1; then
+            gh release create v1.0.0 home-assistant-ai-v1.0.0.pbw \
+              --target "$GITHUB_SHA" \
+              --title "Home Assistant AI 1.0.0" \
+              --notes "First stable Bridge-only Home Assistant AI watch app. Requires Home Assistant Bridge 1.0.0. Uses the shared verified WAV / ADPCM audio SDK, progressive streaming, multi-sentence retries, PebbleOS dictation and watch playback diagnostics." \
+              --latest
+          else
+            gh release upload v1.0.0 home-assistant-ai-v1.0.0.pbw --clobber
+          fi
+          echo "Stable PBW: https://github.com/$GITHUB_REPOSITORY/releases/download/v1.0.0/home-assistant-ai-v1.0.0.pbw" >> "$GITHUB_STEP_SUMMARY"
