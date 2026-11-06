@@ -947,6 +947,12 @@ function pluginDecodeBase64(input){
   }
   return output;
 }
+function pluginWavChecksum(bytes){
+  var hash=2166136261>>>0;
+  for(var i=0;i<bytes.length;i++)
+    hash=Math.imul((hash^bytes[i])>>>0,16777619)>>>0;
+  return hash>>>0;
+}
 function pluginAction(name,args){
   return Pebble.invokeAction({plugin:HA_PLUGIN_UUID,action:name,args:args});
 }
@@ -959,7 +965,7 @@ function pluginResult(result,context){
 // containing signed 8kHz mono PCM16; the phone low-pass filters and encodes
 // 4-bit IMA ADPCM, then sends 700-byte packets to the watch.
 function pluginFetchWav(sentence,gen){
-  var session=null;
+  var session=null,expectedChecksum=null;
   return pluginAction('tts_prepare',{text:sentence}).then(function(result){
     var meta=pluginResult(result,'TTS preparation');
     if(meta.format!=='pcm_s16le_wav'||meta.sample_rate!==8000||
@@ -968,6 +974,9 @@ function pluginFetchWav(sentence,gen){
     if(!meta.session_id||!Number.isInteger(meta.length)||meta.length<44||
        meta.length>1500000)
       throw Error('Invalid plugin TTS session');
+    if(!Number.isInteger(meta.wav_checksum))
+      throw Error('Bridge lacks WAV integrity metadata; update bridge');
+    expectedChecksum=meta.wav_checksum>>>0;
     session=String(meta.session_id);
     var length=meta.length,step=meta.chunk_bytes||6000;
     if(step!==6000)throw Error('Unsupported TTS chunk size');
@@ -987,6 +996,9 @@ function pluginFetchWav(sentence,gen){
     return receive(0);
   }).then(function(audio){
     if(session)pluginAction('tts_release',{session_id:session}).catch(function(){});
+    var receivedChecksum=pluginWavChecksum(new Uint8Array(audio));
+    if(receivedChecksum!==expectedChecksum)
+      throw Error('TTS chunk checksum mismatch (data corrupted during plugin transfer)');
     return wavToPcm(audio);
   },function(error){
     if(session)pluginAction('tts_release',{session_id:session}).catch(function(){});
