@@ -29,7 +29,11 @@ try {
 } catch (err) { hasSpeaker = false; }
 var audioProfile = '8k-16b';
 var lastAnswer = '';
+// Gemini's producer/consumer model: synthesize the next sentence while the
+// current sentence plays. Keep only two compressed sentences queued so long
+// responses never monopolize the phone's JS heap.
 var sentenceQueue = [], readyAudioQueue = [];
+var MAX_READY_AUDIO_SENTENCES=2;
 var isFetchingTTS = false, isSendingBLE = false, requestGeneration = 0;
 var js_adpcm_valpred = 0, js_adpcm_index = 0;
 var stepTable = [
@@ -1193,7 +1197,8 @@ function pluginFetchWav(sentence,gen,testTone,options){
   });
 }
 function startPluginTTSFetchLoop(gen){
-  if(gen!==requestGeneration||isFetchingTTS||!sentenceQueue.length){
+  if(gen!==requestGeneration||isFetchingTTS||!sentenceQueue.length||
+     readyAudioQueue.length>=MAX_READY_AUDIO_SENTENCES){
     conversationMaybeCompleteAudio();return;
   }
   isFetchingTTS=true;
@@ -1215,7 +1220,8 @@ function startPluginTTSFetchLoop(gen){
   });
 }
 function startTTSFetchLoop(gen) {
-  if(gen!==requestGeneration || isFetchingTTS || !sentenceQueue.length) {
+  if(gen!==requestGeneration || isFetchingTTS || !sentenceQueue.length ||
+     readyAudioQueue.length>=MAX_READY_AUDIO_SENTENCES) {
     conversationMaybeCompleteAudio();return;
   }
   isFetchingTTS=true;
@@ -1274,7 +1280,11 @@ function startBLESendLoop() {
   if (readyAudioQueue.length === 0) {conversationMaybeCompleteAudio();return;} 
   
   isSendingBLE = true; 
-  var adpcmBytes = readyAudioQueue.shift(); 
+  var adpcmBytes = readyAudioQueue.shift();
+  // Opening a consumer slot lets the producer fetch/encode the next sentence
+  // concurrently with Bluetooth playback. Both connection modes share this.
+  if(useHaPlugin)startPluginTTSFetchLoop(requestGeneration);
+  else startTTSFetchLoop(requestGeneration);
   var cursor = 0;
   var failureCount = 0;
   var generation = requestGeneration;
