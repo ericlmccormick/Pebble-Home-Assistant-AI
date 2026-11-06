@@ -252,6 +252,14 @@ function formatPcmDiagnostics() {
         ', clipped '+o.output.clipped+', crossings '+o.output.zero_crossings+
         ', duration '+o.output.duration_ms+' ms');
     }
+    if(o.byte_order){
+      var le=o.byte_order.little_endian,be=o.byte_order.big_endian;
+      lines.push('PCM16 LE: mean step '+le.mean_step+
+        ', RMS '+le.rms+', crossings '+le.crossings);
+      lines.push('PCM16 BE: mean step '+be.mean_step+
+        ', RMS '+be.rms+', crossings '+be.crossings);
+      lines.push('Byte-order samples checked: '+o.byte_order.examined_samples);
+    }
     if(o.declared_data_bytes!==undefined)
       lines.push('WAV data: declared '+o.declared_data_bytes+
         ' B; available '+o.available_data_bytes+
