@@ -25,6 +25,11 @@ assert(!phone.includes('USE_BUILTIN_CONNECTION'),
   'Plugin-only app must not expose a built-in-connection toggle');
 assert(!phone.includes('startBLESendLoop')&&!phone.includes('function encodeADPCM'),
   'BLE pacing and encoding must live in the shared SDK');
+assert(watch.includes('app_message_open(12000, 1024)'),
+  'The Pebble watch must open AppMessage before dictation or audio telemetry');
+assert(watch.includes('send_pending_dictation(NULL)') &&
+  watch.includes('app_timer_register(250,send_pending_dictation,NULL)'),
+  'Temporary outbox congestion must retry retained dictation');
 assert(watch.includes('#include "ha_audio.h"'));
 assert(watch.includes('ha_audio_handle_message(iterator)'));
 assert(!watch.includes('static uint8_t s_ring_buffer'),
