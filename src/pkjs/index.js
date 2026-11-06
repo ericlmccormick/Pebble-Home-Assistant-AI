@@ -283,6 +283,14 @@ function formatPcmDiagnostics() {
         ' B; available '+o.available_data_bytes+
         ' B; used '+o.used_data_bytes+' B');
     if(o.wav_length)lines.push('WAV total length: '+o.wav_length+' B');
+    if(o.stage_ms){
+      lines.push('HA generation: '+o.stage_ms.ha_generation+' ms');
+      lines.push('Bridge binary fetch: '+o.stage_ms.binary_download+' ms');
+      lines.push('Bridge WAV parse: '+o.stage_ms.wav_parse+' ms');
+      lines.push('Bridge resampling: '+o.stage_ms.resample+' ms');
+      lines.push('Bridge WAV storage: '+o.stage_ms.session_storage+' ms');
+      lines.push('Bridge processing total: '+o.stage_ms.total_bridge+' ms');
+    }
     if(o.prepare_ms!==undefined)
       lines.push('TTS prepare: '+o.prepare_ms+' ms');
     if(o.chunk_transfer_ms!==undefined)
