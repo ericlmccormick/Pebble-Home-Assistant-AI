@@ -26,10 +26,14 @@ const c={Promise,Error,requestGeneration:1,pluginPreparedSentence:null,
     // prefetched) metadata resolves, but keep the current transfer in flight.
     Promise.resolve(prepared||c.pluginAction('tts_prepare',{text})).then(()=>{
       events.push('first-audio:'+text);
-      onPcm([1,2,3],false);
-      // Model the BLE consumer draining the ready buffer before the next
-      // sentence completes (otherwise intentional backpressure blocks it).
-      c.readyAudioQueue.shift();
+      // Three chunks reach ~750ms of speech before background synthesis
+      // competes with the active transport. Do not prefetch after the first.
+      for(let n=0;n<3;n++){
+        onPcm(Array(1000).fill(1),false);
+        c.readyAudioQueue.shift(); // BLE consumer drains its queue
+        if(n<2)assert(!events.includes('prepare:second') || text!=='first',
+          'Next sentence must not start during critical initial chunks');
+      }
       first=true;
     });
     inflight.push({text,resolve});
