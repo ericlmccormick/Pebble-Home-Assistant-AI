@@ -38,6 +38,7 @@ function newHarness(corrupt,encoder){
   for(let i=0;i<wav.length;i+=6000)
     chunks.push({offset:i,bytes:wav.subarray(i,Math.min(wav.length,i+6000))});
   let actions=[],releases=0,values={},segments=[],observations=[];
+  let active=0,maxActive=0;
   const ctx={
     Promise,Number,String,Math,Date,Uint8Array,
     requestGeneration:1,readyAudioQueue:[],
@@ -70,8 +71,12 @@ function newHarness(corrupt,encoder){
         audio:part.bytes.toString('base64')
       };
       if(corrupt===part.offset)payload.checksum^=1;
-      return new Promise(resolve=>setTimeout(()=>resolve({data:payload}),
-        args.offset===6000?10:0));
+      active++;
+      maxActive=Math.max(active,maxActive);
+      return new Promise(resolve=>setTimeout(()=>{
+        active--;
+        resolve({data:payload});
+      },args.offset===6000?40:2));
     }
   };
   const exported=vm.runInNewContext(code+'\n({pluginStreamWav})',ctx);
@@ -81,7 +86,9 @@ function newHarness(corrupt,encoder){
     segments.push({pcm:Array.from(pcm),last});
   }
   return {run:()=>exported.pluginStreamWav('Test sentence',1,onPcm),
-    segments,actions,observations,get releases(){return releases;},
+    segments,actions,observations,
+    get maxActive(){return maxActive;},
+    get releases(){return releases;},
     get debug(){return JSON.parse(values.debug||'{}');}};
 }
 (async()=>{
@@ -90,6 +97,10 @@ function newHarness(corrupt,encoder){
   assert(h.observations[0].firstBeforeRest,
     'First verified audio must reach sender before requesting the rest of WAV');
   assert(h.segments.length>5,'Long WAV should yield multiple playback segments');
+  assert(h.maxActive<=3,'Sliding window must never exceed 3 live requests');
+  assert(h.maxActive>=2,'Sliding window must actually overlap requests');
+  assert(h.actions.filter(x=>x.startsWith('tts_chunk:')).length>5,
+    'Rolling window must request all later chunks');
   assert.strictEqual(h.segments.filter(x=>x.last).length,1,
     'Only the last WAV chunk may end the sentence');
   assert(h.segments[h.segments.length-1].last,
