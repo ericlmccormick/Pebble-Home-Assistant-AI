@@ -93,6 +93,7 @@ static char s_ha_text[MAX_TEXT_LENGTH];
   static uint8_t s_pcm_read = 0;
   static uint8_t s_pcm_write = 0;
   static uint8_t s_pcm_queued = 0;
+  static bool s_sentence_end_pending = false;
   static uint32_t s_pending_offset = 0;           
   static bool s_ignore_audio = false;           
 
@@ -321,10 +322,15 @@ static void update_text_layout() {
   // Each 800 ADPCM bytes produces 200 ms of 8 kHz/16-bit PCM. A second
   // buffer absorbs BLE callback jitter while the first frame is playing.
   static void fill_pcm_frames(void) {
-    while (s_pcm_queued < 2 && s_buffer_count > 0) {
+    // Wait for a complete 200 ms frame to avoid repeatedly starving the
+    // speaker. Only decode a shorter final frame after sentence-end.
+    while (s_pcm_queued < 2 &&
+          (s_buffer_count >= PLAYBACK_ADPCM_BYTES ||
+           (s_sentence_end_pending && s_buffer_count > 0))) {
       uint8_t slot = s_pcm_write;
       uint16_t count = s_buffer_count < PLAYBACK_ADPCM_BYTES ?
                          s_buffer_count : PLAYBACK_ADPCM_BYTES;
+      if(count<PLAYBACK_ADPCM_BYTES)s_sentence_end_pending=false;
       for(uint16_t i=0;i<count;i++){
         uint8_t value=s_ring_buffer[s_head];
         s_head=(s_head+1)%RING_BUFFER_SIZE;
@@ -389,6 +395,7 @@ static void update_text_layout() {
     s_pcm_read = 0;
     s_pcm_write = 0;
     s_pcm_queued = 0;
+    s_sentence_end_pending = false;
     s_pcm_lengths[0] = 0;
     s_pcm_lengths[1] = 0;
     set_status(NULL);                           
@@ -800,9 +807,10 @@ static void inbox_received_callback(DictionaryIterator *iterator, void *context)
       push_to_ring_buffer(chunk_tuple->value->data, chunk_tuple->length); 
       if (!s_speaker_open && s_buffer_count >= START_BUFFER_THRESHOLD) start_playback();
     }
-  } else if (strcmp(command_tuple->value->cstring, "AUDIO_SENTENCE_END") == 0) { 
-    if (s_ignore_audio) return;                 
-    if (!s_speaker_open && s_buffer_count > 0) start_playback(); 
+  } else if (strcmp(command_tuple->value->cstring, "AUDIO_SENTENCE_END") == 0) {
+    if (s_ignore_audio) return;
+    s_sentence_end_pending=true;
+    if (!s_speaker_open && s_buffer_count > 0) start_playback();
   } 
   #endif
   
