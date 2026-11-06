@@ -88,6 +88,6 @@
       }
     ]
   },
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Pebble Home Assistant voice app powered exclusively by the Home Assistant Bridge plugin and its reusable audio SDK"
 }
