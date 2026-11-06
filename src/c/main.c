@@ -341,6 +341,10 @@ static void update_text_layout() {
       s_pcm_lengths[slot]=(uint32_t)count*4;
       s_pcm_write^=1;
       s_pcm_queued++;
+      // An exact multiple of frame size can finish without a short frame.
+      // Do not apply that sentence-end flag to the next spoken sentence.
+      if(s_buffer_count==0 && s_sentence_end_pending)
+        s_sentence_end_pending=false;
     }
   }
 
