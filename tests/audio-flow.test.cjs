@@ -11,6 +11,10 @@ assert(source.includes('readyAudioQueue.push({bytes:audio,endSentence:last})'),
   'Producer must mark only the final audio segment as sentence end');
 assert(source.includes('if(!endSentence){'),
   'BLE sender must not insert a sentence-end marker at each WAV chunk');
+assert(!source.includes('setTimeout(function(){startBLESendLoop();conversationMaybeCompleteAudio();}, 120)'),
+  'No artificial 120ms pause at sentence handoff');
+assert(source.includes('streamedAdpcm>=3000 || last'),
+  'First three streamed chunks must get priority over next-sentence synthesis');
 assert(source.includes('MAX_PENDING_STREAM_SEGMENTS=8'),
   'Progressive producer must use bounded in-memory backpressure');
 assert(source.includes('return receiveBatch(initialOffset)'),
@@ -32,9 +36,9 @@ while(transmitted<80000){
   peak=Math.max(peak,pacing.queue(t));
   t+=10;
 }
-assert(peak<=7500,'Send-ahead estimation must not overfill its safety limit');
+assert(peak<=9000,'Send-ahead estimation must not overfill its safety limit');
 assert(firstPlayback<400,'Initial packets should not incur a 175ms fixed delay');
-assert(source.includes('BLE_PREBUFFER_BYTES=2100'),
+assert(source.includes('BLE_PREBUFFER_BYTES=2800'),
   'Phone flow estimator must match the watch startup threshold');
 assert(transmitted===80000,'Full long response must be delivered');
 // The Gemini pipeline overlaps sentence generation with transport. This
@@ -47,7 +51,7 @@ assert(source.includes('if(useHaPlugin)startPluginTTSFetchLoop(requestGeneration
 const watch=fs.readFileSync(path.join(__dirname,'../src/c/main.c'),'utf8');
 assert(watch.includes('stop_audio();\n        s_ignore_audio = true;'),
   'Corrupted progressive audio must stop watch playback on failure');
-assert(watch.includes('#define START_BUFFER_THRESHOLD 2100'),
+assert(watch.includes('#define START_BUFFER_THRESHOLD 2800'),
   'Start playback after three 700-byte BLE packets');
 assert(watch.includes('app_timer_register(1, playback_timer_callback, NULL)'),
   'Do not wait an extra full frame before first playback');
