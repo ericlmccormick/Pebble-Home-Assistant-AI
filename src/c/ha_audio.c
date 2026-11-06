@@ -281,7 +281,9 @@ void ha_audio_init(void){clear_stats();s_ignore_audio=false;reset_adpcm_state();
 void ha_audio_stop(void){stop_audio();s_ignore_audio=true;}
 void ha_audio_deinit(void){ha_audio_stop();}
 void ha_audio_set_volume(float v){
-  if(v<0)v=0;if(v>1)v=1;s_volume=v;
+  if(v<0) v=0;
+  if(v>1) v=1;
+  s_volume=v;
 }
 bool ha_audio_is_playing(void){return s_speaker_open||s_buffer_count||s_pcm_queued;}
 bool ha_audio_handle_message(DictionaryIterator *iter){
