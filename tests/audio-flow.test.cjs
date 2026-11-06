@@ -65,5 +65,15 @@ assert(watch.includes('s_sentence_end_pending && s_buffer_count > 0'),
   'Short trailing sentence audio must be preserved');
 assert(watch.includes('length > RING_BUFFER_SIZE - s_buffer_count'),
   'Ring overflow must never silently discard ADPCM predictor bytes');
+assert(source.includes("if(d.COMMAND==='AUDIO_STATS')"),
+  'Phone must consume watch-side playback telemetry');
+assert(source.includes('PCM buffer-empty events:'),
+  'Settings must expose watch-side empty PCM events');
+assert(watch.includes('report_audio_stats();'),
+  'Watch must report completed speaker sessions');
+assert(watch.includes('s_audio_partial_writes++'),
+  'Watch must count short writes');
+assert(watch.includes('s_audio_empty_events++'),
+  'Watch must count PCM-empty episodes');
 console.log('Gemini-style double-buffer and producer/consumer invariants passed');
 console.log('Audio flow and bounded send-ahead regression checks passed');
